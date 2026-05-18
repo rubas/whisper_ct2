@@ -1,62 +1,60 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
+
+Major refactor onto `ct2rs::sys::Whisper` directly. The NIF now owns the
+mel spectrogram, tokenizer, and prompt construction, which unlocks
+structured segment data, prompt biasing, batched transcribe across
+multiple audios, and word-level timestamps.
+
+### Breaking
+
+- `%WhisperCt2.Transcription{}` now exposes `:segments` as a list of
+  `%WhisperCt2.Segment{}` (text, start, end, no_speech_prob, avg_logprob,
+  tokens, words) instead of plain strings, plus new `:language` and
+  `:duration_s` fields.
+- `:timestamp`, `:return_scores`, `:return_logits_vocab`, and
+  `:return_no_speech_prob` options were removed - the corresponding
+  fields are always populated.
+- Raw bare-binary audio is no longer accepted by `transcribe/3`. Use
+  `{:pcm_f32, binary}`; non-`.wav` paths now return a clear
+  `:invalid_request` error instead of silently feeding garbage PCM.
+- `WhisperCt2.available_devices/0` now returns `{:ok, info} | {:error, _}`
+  instead of crashing on the unhappy path.
 
 ### Added
 
-- Precompiled NIF distribution via `rustler_precompiled`. Consumers
-  install Hex artefacts matching their target triple instead of building
-  CTranslate2 from source on first compile. Four artefacts ship: Apple
-  Silicon (Accelerate), x86_64-linux (oneDNN + cuda-dynamic), x86_64-linux
-  `mkl` variant (Intel MKL + cuda-dynamic), and aarch64-linux
-  (oneDNN + cuda-dynamic).
-- New cargo features in `whisper_ct2_native`: `mkl`, `dnnl`, `openblas`,
-  `accelerate`, plus the existing `cuda` and `cuda-dynamic`. Selectable at
-  source-build time via `WHISPER_CT2_FEATURES`.
-- New `WHISPER_CT2_VARIANT=mkl` install-time switch to pick the Intel MKL
-  artefact on x86_64-linux.
-- New `WHISPER_CT2_BUILD=1` install-time switch (and
-  `config :rustler_precompiled, :force_build, whisper_ct2: true`) to force
-  a from-source build instead of downloading a precompiled artefact.
-- `.github/workflows/release.yml` — matrix build of all four artefacts on
-  tag push, uploads tarballs and `checksum-Elixir.WhisperCt2.Native.exs`
-  to the GitHub release.
-- `.github/workflows/ci.yml` and `integration.yml` — PR-time fast checks
-  and weekly end-to-end transcription against the real tiny model.
-- Strict Elixir-side option validation for both `load_model/2` and
-  `transcribe/3`. Unknown keys and out-of-range values now return
-  `{:error, %WhisperCt2.Error{reason: :invalid_request}}` before any NIF call.
-- New `load_model/2` options: `:max_queued_batches`, `:cpu_core_offset`
-  (forwarded to `ct2rs::Config`).
-- New `transcribe/3` options: `:num_hypotheses`, `:return_scores`,
-  `:return_logits_vocab`, `:return_no_speech_prob`,
-  `:max_initial_timestamp_index`, `:suppress_tokens`.
-- README "Audio contract" section documenting the underlying
-  CTranslate2 contract (mono f32 PCM at the model's sample rate, normalized
-  to `-1.0..1.0`).
-- Cargo.lock is now part of the published Hex package for reproducible
-  native builds.
+- `WhisperCt2.transcribe_batch/3` batches every chunk of every input
+  through one encoder forward pass - large speedup for
+  diarization-driven workflows with many short turns.
+- `:initial_prompt` and `:prefix` options bias decoding toward domain
+  vocabulary or a forced opening (same role as in faster-whisper).
+- `:word_timestamps` runs one batched DTW alignment pass and attaches
+  `%WhisperCt2.Word{}` entries with per-word timing to each segment.
+- `%WhisperCt2.Segment{}` and `%WhisperCt2.Word{}` modules.
+- `WhisperCt2.Pcm.slice/4` helper for cheaply carving sub-windows out of
+  an already-decoded f32 buffer (diarization, VAD-driven splices).
 
-### Changed
+### Internal
 
-- Native error payloads are now plain `NifMap` structs with atom keys
-  (`:type`, `:message`, `:details`) instead of JSON-encoded serde values.
-- `nif_available_devices` and `nif_model_info` are now wrapped in
-  `run_with_panic_protection`, so every NIF entry point catches Rust panics
-  and returns `:nif_panic` instead of risking the BEAM.
-
-### Removed
-
-- Dropped unused Rust dependencies: `hound`, `serde`, `serde_json`, and the
-  `serde` feature on `rustler`. WAV decoding remains in pure Elixir
-  (`WhisperCt2.Wav`).
+- New Rust modules: `preprocessor` (own mel filterbank), `tokens`
+  (special-token IDs, prompt construction, timestamp parsing), `align`
+  (batched DTW + BPE word grouping), `transcribe` (single + batched
+  flow).
+- English-only checkpoints (`*.en`) now use the correct
+  `[<|startoftranscript|>]` prompt instead of the multilingual
+  `[sot, lang, transcribe]` shape.
 
 ## 0.1.0
 
 - Initial release.
-- `WhisperCt2.load_model/1` loads a CTranslate2-converted Whisper directory.
+- `WhisperCt2.load_model/2` loads a CTranslate2-converted Whisper directory.
 - `WhisperCt2.transcribe/3` runs inference on `.wav` paths or raw f32 PCM.
 - Built-in WAV decoder for 16 kHz mono / stereo, 16-bit and 32-bit PCM and
   32-bit float.
 - Rustler NIF over [`ct2rs`](https://crates.io/crates/ct2rs); no Python
   runtime required.
+- Precompiled NIF artefacts via `rustler_precompiled` for
+  `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu` (oneDNN, optional
+  `mkl` variant), and `aarch64-unknown-linux-gnu`. CUDA loaded lazily via
+  `cuda-dynamic` on all Linux artefacts.

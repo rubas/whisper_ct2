@@ -8,8 +8,8 @@ defmodule WhisperCt2.Native do
   """
 
   @cargo_features_env System.get_env("WHISPER_CT2_FEATURES", "")
-  @cargo_features Application.compile_env(:whisper_ct2, :cargo_features, @cargo_features_env)
-                  |> String.split(~r/[,\s]+/, trim: true)
+  @cargo_features_raw Application.compile_env(:whisper_ct2, :cargo_features, @cargo_features_env)
+  @cargo_features String.split(@cargo_features_raw, ~r/[,\s]+/, trim: true)
 
   @version Mix.Project.config()[:version]
 
@@ -18,9 +18,7 @@ defmodule WhisperCt2.Native do
     crate: "whisper_ct2_native",
     base_url: "https://github.com/rubas/whisper_ct2/releases/download/v#{@version}",
     version: @version,
-    # `force_build` is opt-in for consumers (precompiled is the default path)
-    # but unconditional for this repo via `config/config.exs`. The env-var
-    # path lets contributors of a consuming app rebuild on demand.
+    # Opt-in source build; unconditional in this repo via `config/config.exs`.
     force_build:
       System.get_env("WHISPER_CT2_BUILD") in ["1", "true"] or
         Application.compile_env(:rustler_precompiled, [:force_build, :whisper_ct2], false),
@@ -30,10 +28,7 @@ defmodule WhisperCt2.Native do
       x86_64-unknown-linux-gnu
       aarch64-unknown-linux-gnu
     ),
-    # On x86_64 Linux we ship two artefacts: the default oneDNN build
-    # (Intel + AMD) and an Intel-tuned MKL build. Consumers opt into MKL
-    # by setting `WHISPER_CT2_VARIANT=mkl` in their environment before
-    # `mix deps.compile`.
+    # Optional MKL variant on x86_64 Linux; opt in via `WHISPER_CT2_VARIANT=mkl`.
     variants: %{
       "x86_64-unknown-linux-gnu" => [
         mkl: fn -> System.get_env("WHISPER_CT2_VARIANT") == "mkl" end
@@ -41,15 +36,15 @@ defmodule WhisperCt2.Native do
     },
     features: @cargo_features
 
-  @doc "Reports CUDA support of this build plus visible CPU/CUDA device counts."
+  @doc "CPU/CUDA device counts and the build's CUDA-support flag."
   @spec available_devices() :: {:ok, map()} | {:error, map()}
   def available_devices, do: nif_available_devices()
 
-  @doc "Loads a CTranslate2-converted Whisper model from a directory."
+  @doc "Loads a CT2 Whisper model directory."
   @spec load_model(String.t(), map()) :: {:ok, reference()} | {:error, map()}
   def load_model(path, opts), do: nif_load_model(path, opts)
 
-  @doc "Returns model metadata (sampling rate, window length, multilingual flag, device, compute_type)."
+  @doc "Returns model metadata."
   @spec model_info(reference()) :: {:ok, map()} | {:error, map()}
   def model_info(model), do: nif_model_info(model)
 
@@ -57,13 +52,24 @@ defmodule WhisperCt2.Native do
   Runs Whisper on a buffer of PCM samples.
 
   `samples_bin` is a binary of little-endian `f32` samples (mono, 16 kHz).
-  `ct2rs::Whisper` splits anything longer than the 30 s window internally.
+  Audio longer than the 30 s Whisper window is chunked and batched
+  internally; the encoder runs once across all chunks. Returns a structured
+  transcription map (`%{language, duration_s, segments: [...]}`).
   """
-  @spec transcribe(reference(), binary(), map()) :: {:ok, [String.t()]} | {:error, map()}
+  @spec transcribe(reference(), binary(), map()) :: {:ok, map()} | {:error, map()}
   def transcribe(model, samples_bin, opts), do: nif_transcribe(model, samples_bin, opts)
+
+  @doc """
+  Runs Whisper on a list of PCM sample buffers in one batched `generate`
+  call. Returns a list of structured transcription maps in input order.
+  """
+  @spec transcribe_batch(reference(), [binary()], map()) :: {:ok, [map()]} | {:error, map()}
+  def transcribe_batch(model, samples_bins, opts),
+    do: nif_transcribe_batch(model, samples_bins, opts)
 
   defp nif_available_devices, do: :erlang.nif_error(:nif_not_loaded)
   defp nif_load_model(_path, _opts), do: :erlang.nif_error(:nif_not_loaded)
   defp nif_model_info(_model), do: :erlang.nif_error(:nif_not_loaded)
   defp nif_transcribe(_model, _samples_bin, _opts), do: :erlang.nif_error(:nif_not_loaded)
+  defp nif_transcribe_batch(_model, _samples_bins, _opts), do: :erlang.nif_error(:nif_not_loaded)
 end

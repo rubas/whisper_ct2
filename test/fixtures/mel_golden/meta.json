@@ -1,0 +1,11 @@
+{
+  "generator": "faster-whisper FeatureExtractor",
+  "sampling_rate": 16000,
+  "audio_samples": 480000,
+  "mel_shape": [
+    80,
+    3000
+  ],
+  "audio_sha256": "4db506b0807d5256aed0f05d6b140768a267ff7b1da83076d6203fe6fa14a925",
+  "mel_sha256": "662512d344a5533b65183fd7acd0a02ebf2b23c157bc10aaef51215cd9379192"
+}

@@ -1,0 +1,134 @@
+[
+  {
+    "text": " And",
+    "start": 0.0,
+    "end": 0.76,
+    "probability": 0.6921191811561584
+  },
+  {
+    "text": " so,",
+    "start": 0.76,
+    "end": 1.06,
+    "probability": 0.9726617932319641
+  },
+  {
+    "text": " my",
+    "start": 1.38,
+    "end": 1.44,
+    "probability": 0.9721760749816895
+  },
+  {
+    "text": " fellow",
+    "start": 1.44,
+    "end": 1.76,
+    "probability": 0.9993389248847961
+  },
+  {
+    "text": " Americans",
+    "start": 1.76,
+    "end": 2.26,
+    "probability": 0.8817110061645508
+  },
+  {
+    "text": " ask",
+    "start": 2.26,
+    "end": 3.88,
+    "probability": 0.6340938210487366
+  },
+  {
+    "text": " not",
+    "start": 3.88,
+    "end": 4.54,
+    "probability": 0.7759400010108948
+  },
+  {
+    "text": " what",
+    "start": 4.54,
+    "end": 5.7,
+    "probability": 0.8827930688858032
+  },
+  {
+    "text": " your",
+    "start": 5.7,
+    "end": 6.02,
+    "probability": 0.9840153455734253
+  },
+  {
+    "text": " country",
+    "start": 6.02,
+    "end": 6.36,
+    "probability": 0.9970144033432007
+  },
+  {
+    "text": " can",
+    "start": 6.36,
+    "end": 6.76,
+    "probability": 0.9953094124794006
+  },
+  {
+    "text": " do",
+    "start": 6.76,
+    "end": 7.02,
+    "probability": 0.9984435439109802
+  },
+  {
+    "text": " for",
+    "start": 7.02,
+    "end": 7.26,
+    "probability": 0.98777174949646
+  },
+  {
+    "text": " you",
+    "start": 7.26,
+    "end": 8.02,
+    "probability": 0.9886596202850342
+  },
+  {
+    "text": " ask",
+    "start": 8.02,
+    "end": 8.66,
+    "probability": 0.17822431027889252
+  },
+  {
+    "text": " what",
+    "start": 8.66,
+    "end": 8.94,
+    "probability": 0.9830584526062012
+  },
+  {
+    "text": " you",
+    "start": 8.94,
+    "end": 9.28,
+    "probability": 0.9899281859397888
+  },
+  {
+    "text": " can",
+    "start": 9.28,
+    "end": 9.5,
+    "probability": 0.9955606460571289
+  },
+  {
+    "text": " do",
+    "start": 9.5,
+    "end": 9.72,
+    "probability": 0.9978808164596558
+  },
+  {
+    "text": " for",
+    "start": 9.72,
+    "end": 9.92,
+    "probability": 0.9975711703300476
+  },
+  {
+    "text": " your",
+    "start": 9.92,
+    "end": 10.24,
+    "probability": 0.9936344623565674
+  },
+  {
+    "text": " country.",
+    "start": 10.24,
+    "end": 10.5,
+    "probability": 0.998913049697876
+  }
+]

@@ -1,10 +1,11 @@
 defmodule WhisperCt2.Wav do
   @moduledoc """
-  Minimal RIFF/WAVE decoder for the formats Whisper actually consumes.
+  Minimal RIFF/WAVE decoder for the formats Whisper consumes directly.
 
-  Supports the canonical Whisper input: mono, 16 kHz, 16-bit PCM. Stereo files
-  are downmixed by averaging channels. Sample rates other than 16 kHz are
-  rejected; resample upstream (e.g. with `ffmpeg -ar 16000 -ac 1`).
+  Accepts 16 kHz audio in any of: mono / stereo 16-bit PCM, mono / stereo
+  32-bit PCM, mono / stereo 32-bit float. Stereo is downmixed by averaging
+  channels. Sample rates other than 16 kHz are rejected; resample upstream
+  (e.g. `ffmpeg -ar 16000 -ac 1`).
 
   Returns samples as a binary of little-endian `f32` values in `[-1.0, 1.0]`,
   ready to feed into `WhisperCt2.Native.transcribe/3`.
@@ -14,18 +15,22 @@ defmodule WhisperCt2.Wav do
 
   @target_rate 16_000
 
+  @doc """
+  The sample rate this decoder produces (always 16 kHz). Exposed so the
+  rest of the library can assert model sampling_rate matches without
+  reaching into `@target_rate`.
+  """
+  @spec target_rate() :: pos_integer()
+  def target_rate, do: @target_rate
+  # 256 MiB cap on `read_file/1` — refuses a typo'd path or huge file
+  # before slurping it into the BEAM heap; split larger inputs across
+  # `transcribe_batch/3`.
+  @max_bytes 268_435_456
+
   @spec read_file(Path.t()) :: {:ok, binary()} | {:error, Error.t()}
   def read_file(path) do
     with {:ok, bytes} <- read_bytes(path) do
       decode(bytes)
-    end
-  end
-
-  @spec read_file!(Path.t()) :: binary()
-  def read_file!(path) do
-    case read_file(path) do
-      {:ok, samples} -> samples
-      {:error, err} -> raise err
     end
   end
 
@@ -43,13 +48,30 @@ defmodule WhisperCt2.Wav do
   def decode(_), do: {:error, Error.new(:invalid_request, "not a RIFF/WAVE file")}
 
   defp read_bytes(path) do
-    case File.read(path) do
-      {:ok, bytes} -> {:ok, bytes}
-      {:error, posix} -> {:error, Error.new(:invalid_request, "cannot read WAV", %{posix: posix, path: path})}
+    case File.stat(path) do
+      {:ok, %File.Stat{size: size}} when size > @max_bytes ->
+        {:error,
+         Error.new(:invalid_request, "WAV file exceeds the in-memory size cap", %{
+           path: path,
+           size: size,
+           max_bytes: @max_bytes
+         })}
+
+      {:ok, _stat} ->
+        case File.read(path) do
+          {:ok, bytes} ->
+            {:ok, bytes}
+
+          {:error, posix} ->
+            {:error, Error.new(:invalid_request, "cannot read WAV", %{posix: posix, path: path})}
+        end
+
+      {:error, posix} ->
+        {:error, Error.new(:invalid_request, "cannot stat WAV", %{posix: posix, path: path})}
     end
   end
 
-  defp find_chunks(<<>>, fmt, data) when not is_nil(fmt) and not is_nil(data), do: {:ok, fmt, data}
+  defp find_chunks(<<>>, fmt, data) when is_map(fmt) and is_binary(data), do: {:ok, fmt, data}
 
   defp find_chunks(<<"fmt ", size::little-32, body::binary-size(size), rest::binary>>, _fmt, data) do
     case parse_fmt(body) do

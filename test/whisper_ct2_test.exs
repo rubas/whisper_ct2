@@ -49,6 +49,58 @@ defmodule WhisperCt2Test do
       assert {:error, %Error{reason: :invalid_request}} =
                WhisperCt2.transcribe(fake_model(), 42)
     end
+
+    test "rejects a bare binary that is not a .wav path" do
+      # Used to silently become garbage PCM; now must fail with a clear
+      # error so typo'd paths are caught at the boundary.
+      assert {:error, %Error{reason: :invalid_request, message: msg}} =
+               WhisperCt2.transcribe(fake_model(), <<0, 1, 2, 3>>)
+
+      assert msg =~ "does not exist" or msg =~ ".wav"
+    end
+
+    test "rejects a non-.wav path that exists on disk" do
+      path = Path.join(System.tmp_dir!(), "whisper_ct2_not_wav.mp3")
+      File.write!(path, "id3 garbage")
+      on_exit(fn -> File.rm(path) end)
+
+      assert {:error, %Error{reason: :invalid_request, message: msg}} =
+               WhisperCt2.transcribe(fake_model(), path)
+
+      assert msg =~ ".wav"
+    end
+  end
+
+  describe "transcribe_batch/3 input validation" do
+    test "rejects non-list audios" do
+      assert {:error, %Error{reason: :invalid_request}} =
+               WhisperCt2.transcribe_batch(fake_model(), "not-a-list")
+    end
+
+    test "propagates a bad audio entry's error" do
+      assert {:error, %Error{reason: :invalid_request}} =
+               WhisperCt2.transcribe_batch(fake_model(), [
+                 {:pcm_f32, <<0, 0, 0, 0>>},
+                 {:pcm_f32, <<1, 2, 3>>}
+               ])
+    end
+
+    test "short-circuits an empty list without touching the NIF" do
+      # Contract: empty batch is a no-op, not an error. Critically, this
+      # must not depend on a real loaded model.
+      assert {:ok, []} = WhisperCt2.transcribe_batch(fake_model(), [])
+    end
+  end
+
+  describe "available_devices/0" do
+    test "returns an {:ok, info} tuple" do
+      assert {:ok, %{cpu: cpu, cuda: cuda, cuda_supported: cuda_supported}} =
+               WhisperCt2.available_devices()
+
+      assert is_integer(cpu) and cpu >= 0
+      assert is_integer(cuda) and cuda >= 0
+      assert is_boolean(cuda_supported)
+    end
   end
 
   describe "load_model/2 option validation" do
@@ -114,6 +166,26 @@ defmodule WhisperCt2Test do
     test "rejects empty language string" do
       assert {:error, %Error{reason: :invalid_request}} =
                WhisperCt2.transcribe(fake_model(), {:pcm_f32, <<>>}, language: "  ")
+    end
+
+    test "rejects empty :initial_prompt and :prefix strings" do
+      assert {:error, %Error{reason: :invalid_request}} =
+               WhisperCt2.transcribe(fake_model(), {:pcm_f32, <<>>}, initial_prompt: "")
+
+      assert {:error, %Error{reason: :invalid_request}} =
+               WhisperCt2.transcribe(fake_model(), {:pcm_f32, <<>>}, prefix: "")
+    end
+
+    test "rejects non-boolean :word_timestamps" do
+      assert {:error, %Error{reason: :invalid_request}} =
+               WhisperCt2.transcribe(fake_model(), {:pcm_f32, <<>>}, word_timestamps: "yes")
+    end
+
+    test "rejects removed return_* options" do
+      assert {:error, %Error{reason: :invalid_request, message: msg}} =
+               WhisperCt2.transcribe(fake_model(), {:pcm_f32, <<>>}, return_scores: true)
+
+      assert msg =~ "unknown option"
     end
   end
 
