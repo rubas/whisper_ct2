@@ -1,0 +1,71 @@
+version: "3"
+
+# Cargo manifest lives next to the Rust crate, not in the repo root.
+vars:
+  CARGO_MANIFEST: native/whisper_ct2_native/Cargo.toml
+
+tasks:
+  setup:
+    desc: Install Elixir deps
+    cmds:
+      - mix deps.get
+
+  compile:
+    desc: Compile project (builds NIF; first run takes ~10 min)
+    cmds:
+      - mix compile --warnings-as-errors
+
+  test:
+    desc: Run fast Elixir unit tests
+    deps: [compile]
+    cmds:
+      - mix test --color
+
+  test:integration:
+    desc: End-to-end Whisper transcription against the tiny model (~75 MB download on first run)
+    deps: [compile]
+    cmds:
+      - mix test --include integration --color
+
+  test:rust:
+    desc: Run Rust-side unit tests
+    cmds:
+      - cargo test --manifest-path {{.CARGO_MANIFEST}}
+
+  fmt:
+    desc: Format Elixir and Rust sources in place
+    cmds:
+      - mix format
+      - cargo fmt --manifest-path {{.CARGO_MANIFEST}}
+
+  fmt:check:
+    desc: Verify Elixir and Rust formatting (no writes)
+    cmds:
+      - mix format --check-formatted
+      - cargo fmt --manifest-path {{.CARGO_MANIFEST}} -- --check
+
+  lint:
+    desc: Lint Elixir (credo) and Rust (clippy) with warnings treated as errors
+    cmds:
+      - mix credo --strict
+      - cargo clippy --manifest-path {{.CARGO_MANIFEST}} --all-targets -- -D warnings
+
+  docs:
+    desc: Build HexDocs into doc/
+    cmds:
+      - mix docs
+
+  hex:build:
+    desc: Build the Hex tarball locally without publishing (sanity check)
+    cmds:
+      - mix hex.build
+
+  check:
+    desc: Full local quality gate (Elixir + Rust)
+    cmds:
+      - task: fmt:check
+      - task: compile
+      - task: lint
+      - task: test
+      - task: test:rust
+      - task: docs

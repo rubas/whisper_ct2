@@ -1,0 +1,55 @@
+[package]
+name = "whisper_ct2_native"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+
+[lib]
+name = "whisper_ct2_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+rustler = "0.37.3"
+ct2rs = { version = "0.9.18", features = ["whisper"] }
+
+[features]
+# Build-time choices, selected via mix:
+#   WHISPER_CT2_FEATURES="dnnl cuda-dynamic" mix compile
+#
+# === GPU ===
+# `cuda`         — CTranslate2 with statically linked CUDA kernels; libcudart
+#                  must be present at NIF load time.
+# `cuda-dynamic` — same kernels, but libcudart is loaded lazily; one binary
+#                  runs on CPU-only hosts and gracefully uses CUDA when
+#                  available. Preferred for shipping.
+#
+# === CPU SGEMM backend ===
+# Exactly one should normally be enabled. Defaults to ct2rs's `ruy` if none.
+# `mkl`        — Intel oneMKL. Fastest on Intel x86; deliberately slow on AMD.
+# `dnnl`       — oneDNN. Strong on both Intel and AMD x86. Best single-binary
+#                choice for x86_64-linux when targeting mixed CPU vendors.
+# `openblas`   — portable OpenBLAS link.
+# `accelerate` — Apple Accelerate framework (Apple Silicon / macOS only).
+default = []
+cuda = ["ct2rs/cuda"]
+cuda-dynamic = ["ct2rs/cuda-dynamic-loading"]
+mkl = ["ct2rs/mkl"]
+dnnl = ["ct2rs/dnnl"]
+openblas = ["ct2rs/openblas"]
+accelerate = ["ct2rs/accelerate"]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

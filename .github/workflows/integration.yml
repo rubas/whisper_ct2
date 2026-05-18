@@ -1,0 +1,99 @@
+name: Integration
+
+# Slow path: downloads ~75 MB Whisper model + JFK audio fixture and runs a
+# real end-to-end CTranslate2 transcription. Not gated on every PR; kept on
+# manual dispatch + a weekly cron so upstream model/audio source rot is
+# noticed within a week.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MIX_ENV: test
+  ELIXIR_VERSION: "1.20.0-rc.5"
+  OTP_VERSION: "29.0"
+  RUST_TOOLCHAIN: "1.83.0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  integration:
+    name: End-to-end transcription
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake build-essential
+
+      - name: Install Task
+        uses: go-task/setup-task@3be4020d41929789a01026e0e427a4321ce0ad44 # v2
+
+      - name: Setup Elixir/OTP
+        uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Cache Elixir build + deps
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            _build
+            deps
+          key: ${{ runner.os }}-mix-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-
+
+      - name: Cache Cargo registry + git
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('native/whisper_ct2_native/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ env.RUST_TOOLCHAIN }}-
+
+      - name: Cache native build artifacts
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            native/whisper_ct2_native/target
+          key: ${{ runner.os }}-native-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('native/whisper_ct2_native/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-native-${{ env.RUST_TOOLCHAIN }}-
+
+      - name: Cache integration fixtures (model + audio)
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: test/fixtures
+          key: ${{ runner.os }}-fixtures-${{ hashFiles('test/support/**/*.ex') }}
+          restore-keys: |
+            ${{ runner.os }}-fixtures-
+
+      - name: Install Hex/Rebar + fetch deps
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+          mix deps.get
+
+      - name: Run integration tests
+        run: task test:integration

@@ -1,0 +1,28 @@
+# Mix
+/_build/
+/cover/
+/deps/
+/doc/
+/tmp/
+erl_crash.dump
+*.ez
+
+# Hex tarball
+whisper_ct2-*.tar
+
+# Rust native artifacts
+native/*/target/
+priv/native/
+
+# Test fixtures — downloaded on demand by test/support/fixtures.ex.
+# Whole directory ignored; no checked-in fixtures.
+test/fixtures/
+
+# Local caches
+.cargo-home/
+.hex-home/
+.mix-home/
+.dprint-cache/
+
+# Claude
+.claude/

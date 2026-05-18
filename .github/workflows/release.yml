@@ -1,0 +1,274 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and publish (e.g., v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name }}-${{ github.ref_name || inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  NIF_VERSION: "2.17"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  detect:
+    runs-on: ubuntu-24.04
+    outputs:
+      should_release: ${{ steps.resolve.outputs.should_release }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      tag_exists: ${{ steps.resolve.outputs.tag_exists }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release target
+        id: resolve
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
+            VERSION="${TAG#v}"
+            SHOULD_RELEASE=true
+          else
+            VERSION="$(sed -n 's/^  @version "\([^"]*\)"$/\1/p' mix.exs | head -n1)"
+            PREVIOUS_VERSION="$(git show HEAD^:mix.exs 2>/dev/null | sed -n 's/^  @version "\([^"]*\)"$/\1/p' | head -n1)"
+
+            if [ -z "$VERSION" ]; then
+              echo "Failed to read current mix.exs version" >&2
+              exit 1
+            fi
+
+            TAG="v$VERSION"
+
+            if [ "$VERSION" = "$PREVIOUS_VERSION" ]; then
+              SHOULD_RELEASE=false
+            else
+              SHOULD_RELEASE=true
+            fi
+          fi
+
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            TAG_EXISTS=true
+          else
+            TAG_EXISTS=false
+          fi
+
+          echo "should_release=$SHOULD_RELEASE" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag_exists=$TAG_EXISTS" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: detect
+    if: needs.detect.outputs.should_release == 'true'
+    name: ${{ matrix.target }}${{ matrix.variant && format('--{0}', matrix.variant) || '' }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # x86_64 Linux — default oneDNN backend, CUDA loaded lazily
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            lib_ext: so
+            features: dnnl cuda-dynamic
+            install_cuda: true
+            variant: ""
+
+          # x86_64 Linux — Intel-tuned MKL variant
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            lib_ext: so
+            features: mkl cuda-dynamic
+            install_cuda: true
+            variant: mkl
+
+          # aarch64 Linux — Graviton/Grace, oneDNN, optional CUDA via dynamic loading
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            lib_ext: so
+            features: dnnl cuda-dynamic
+            install_cuda: true
+            variant: ""
+
+          # Apple Silicon — Accelerate framework, no CUDA
+          - target: aarch64-apple-darwin
+            runner: macos-15
+            lib_ext: dylib
+            features: accelerate
+            install_cuda: false
+            variant: ""
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      # --- Linux build dependencies ---
+
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake perl libclang-dev pkg-config
+
+      - name: Install CUDA toolkit
+        if: matrix.install_cuda
+        env:
+          ARCH: ${{ runner.arch == 'X64' && 'x86_64' || 'sbsa' }}
+        run: |
+          # CUDA dynamic-loading still needs the SDK at *build* time to
+          # compile the .cu kernels; libcudart is loaded lazily at run time.
+          DISTRO=ubuntu2404
+          KEYRING=cuda-keyring_1.1-1_all.deb
+          wget -q "https://developer.download.nvidia.com/compute/cuda/repos/${DISTRO}/${ARCH}/${KEYRING}"
+          sudo dpkg -i "${KEYRING}"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cuda-toolkit-12-6
+          echo "PATH=/usr/local/cuda/bin:$PATH" >> "$GITHUB_ENV"
+
+      # --- Build ---
+
+      - name: Cargo cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            native/whisper_ct2_native/target
+          key: release-${{ matrix.target }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }}-${{ hashFiles('native/whisper_ct2_native/Cargo.lock') }}
+          restore-keys: release-${{ matrix.target }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }}-
+
+      - name: Build NIF
+        working-directory: native/whisper_ct2_native
+        env:
+          FEATURES: ${{ matrix.features }}
+        run: cargo build --release --target ${{ matrix.target }} --features "$FEATURES"
+
+      # --- Package ---
+
+      - name: Create tarball
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.detect.outputs.version }}
+          LIB_EXT: ${{ matrix.lib_ext }}
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          SRC_DIR="native/whisper_ct2_native/target/${TARGET}/release"
+          SRC_NAME="libwhisper_ct2_native.${LIB_EXT}"
+
+          if [ -n "$VARIANT" ]; then
+            VARIANT_SUFFIX="--${VARIANT}"
+          else
+            VARIANT_SUFFIX=""
+          fi
+
+          LIB_NAME="libwhisper_ct2_native-v${VERSION}-nif-${NIF_VERSION}-${TARGET}${VARIANT_SUFFIX}.${LIB_EXT}"
+
+          cp "${SRC_DIR}/${SRC_NAME}" "${SRC_DIR}/${LIB_NAME}"
+          tar -czf "${LIB_NAME}.tar.gz" -C "${SRC_DIR}" "${LIB_NAME}"
+          rm "${SRC_DIR}/${LIB_NAME}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: nif-${{ matrix.target }}${{ matrix.variant && format('--{0}', matrix.variant) || '' }}
+          path: "*whisper_ct2_native-*.tar.gz"
+          if-no-files-found: error
+
+  tag:
+    runs-on: ubuntu-24.04
+    needs: detect
+    if: github.event_name == 'push' && needs.detect.outputs.should_release == 'true' && needs.detect.outputs.tag_exists != 'true'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Create and push release tag
+        env:
+          TAG: ${{ needs.detect.outputs.tag }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag "$TAG"
+          git push origin "$TAG"
+
+  release:
+    name: GitHub Release
+    needs:
+      - detect
+      - build
+      - tag
+    if: always() && needs.detect.outputs.should_release == 'true' && needs.build.result == 'success' && (needs.tag.result == 'success' || needs.tag.result == 'skipped')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: nif-*
+          merge-multiple: true
+          path: artifacts/
+
+      - name: List artifacts
+        run: ls -lh artifacts/
+
+      - name: Generate SHA256SUMS
+        working-directory: artifacts
+        run: sha256sum *.tar.gz | tee SHA256SUMS
+
+      - name: Create release
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+        with:
+          tag_name: ${{ needs.detect.outputs.tag }}
+          target_commitish: main
+          files: |
+            artifacts/*.tar.gz
+            artifacts/SHA256SUMS
+          generate_release_notes: true
+
+      - name: Generate rustler_precompiled checksum file
+        run: |
+          FILE="checksum-Elixir.WhisperCt2.Native.exs"
+          echo '%{' > "$FILE"
+          while read -r hash name; do
+            echo "  \"${name}\" => \"sha256:${hash}\"," >> "$FILE"
+          done < <(sort -k2 artifacts/SHA256SUMS)
+          echo '}' >> "$FILE"
+          cat "$FILE"
+
+      - name: Commit and push checksum
+        env:
+          TAG: ${{ needs.detect.outputs.tag }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add checksum-Elixir.WhisperCt2.Native.exs
+          git diff --cached --quiet && echo "No checksum changes" && exit 0
+          git commit -m "chore: update NIF checksum for $TAG"
+          git push
