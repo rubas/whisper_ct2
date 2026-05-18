@@ -13,16 +13,16 @@
     clippy::too_many_lines
 )]
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use ct2rs::sys::{Device, StorageView, Whisper, WhisperOptions};
 use ct2rs::tokenizers::hf;
 
-use crate::align::{align_batch, ChunkAlignInput, DEFAULT_MEDIAN_FILTER_WIDTH};
+use crate::align::{ChunkAlignInput, DEFAULT_MEDIAN_FILTER_WIDTH, align_batch};
 use crate::errors::{invalid_request, runtime_error};
 use crate::preprocessor::Preprocessor;
 use crate::tokens::{
-    decode_ids, encode_plain, language_token, split_sub_segments, token_id, PromptParts,
-    SpecialTokens, SubSegment, NO_TIMESTAMPS, SOT, STARTOFPREV, TRANSCRIBE,
+    NO_TIMESTAMPS, PromptParts, SOT, STARTOFPREV, SpecialTokens, SubSegment, TRANSCRIBE,
+    decode_ids, encode_plain, language_token, split_sub_segments, token_id,
 };
 
 /// Soft cap on the flat mel buffer (`total_chunks * n_mels * nb_max_frames`

@@ -1,6 +1,6 @@
 #![allow(clippy::cast_precision_loss)]
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use ct2rs::tokenizers::hf;
 use tokenizers::Tokenizer as InnerTokenizer;
 
@@ -135,10 +135,17 @@ pub(crate) struct SubSegment {
 ///
 /// `chunk_duration_s` is the wall-clock length of the Whisper window
 /// (30 s for every published checkpoint). It is used as the fallback
-/// `end_in_chunk` when the model emits text without a closing
-/// `<|t_end|>` token, which faster-whisper handles the same way:
-/// some fine-tunes (notably the `notebotIE` Swiss-German variant) only
-/// reliably emit the opening timestamp, and dropping the trailing text
+/// `end_in_chunk` in two situations:
+///
+/// 1. **Unclosed pair**: the model emitted `<|t_start|> text [EOT]` with
+///    no closing timestamp. Some fine-tunes (notably notebotIE Swiss-German)
+///    only reliably emit the opening timestamp.
+/// 2. **No timestamps at all**: the prompt asked for `<|notimestamps|>`,
+///    or the fine-tune ignored the timestamp instruction and emitted
+///    plain text. The whole token stream becomes one sub-segment
+///    spanning `[0, chunk_duration_s)`.
+///
+/// Faster-whisper handles both cases the same way; dropping the text
 /// silently is how multi-second turns turned into empty transcripts.
 pub(crate) fn split_sub_segments(
     token_ids: &[u32],
@@ -147,13 +154,31 @@ pub(crate) fn split_sub_segments(
 ) -> Vec<SubSegment> {
     let mut out = Vec::new();
     let mut i = 0;
+    let mut saw_first_timestamp = false;
+
     while i < token_ids.len() {
+        let preamble_start = i;
+
         while i < token_ids.len() && token_ids[i] < timestamp_begin {
             i += 1;
         }
+
         if i >= token_ids.len() {
+            // No timestamps in this entire chunk. Flush every token as
+            // one sub-segment covering the whole chunk window — without
+            // this, `<|notimestamps|>` mode (or any fine-tune that just
+            // refuses to emit timestamps) would lose all of its output.
+            if !saw_first_timestamp && preamble_start < token_ids.len() {
+                out.push(SubSegment {
+                    text_token_ids: token_ids[preamble_start..].to_vec(),
+                    start_in_chunk: 0.0,
+                    end_in_chunk: chunk_duration_s,
+                });
+            }
             break;
         }
+
+        saw_first_timestamp = true;
         let start_id = token_ids[i];
         let text_start = i + 1;
         i += 1;
@@ -247,6 +272,18 @@ mod tests {
     fn split_sub_segments_skips_pairs_with_empty_text() {
         let out = split_sub_segments(&[ts(0), ts(50)], BEGIN, CHUNK_S);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn split_sub_segments_flushes_all_text_when_no_timestamps_emitted() {
+        // `<|notimestamps|>` mode or fine-tunes that just refuse to emit
+        // timestamps: the whole token stream becomes one segment spanning
+        // [0, chunk_duration_s).
+        let out = split_sub_segments(&[100, 101, 102, 103], BEGIN, CHUNK_S);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].text_token_ids, vec![100, 101, 102, 103]);
+        assert!((out[0].start_in_chunk - 0.0).abs() < 1e-6);
+        assert!((out[0].end_in_chunk - CHUNK_S).abs() < 1e-6);
     }
 
     #[test]

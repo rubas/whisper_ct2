@@ -113,6 +113,7 @@ struct TranscribeOpts {
     initial_prompt: Option<String>,
     prefix: Option<String>,
     word_timestamps: Option<bool>,
+    with_timestamps: Option<bool>,
     beam_size: Option<u32>,
     patience: Option<f32>,
     length_penalty: Option<f32>,
@@ -515,7 +516,7 @@ fn build_request(opts: &TranscribeOpts) -> TranscribeRequest {
 
     TranscribeRequest {
         language: opts.language.clone(),
-        with_timestamps: true,
+        with_timestamps: opts.with_timestamps.unwrap_or(true),
         initial_prompt: opts.initial_prompt.clone(),
         prefix: opts.prefix.clone(),
         word_timestamps: opts.word_timestamps.unwrap_or(false),

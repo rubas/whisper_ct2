@@ -60,7 +60,15 @@ auto-detect per-audio (only meaningful on multilingual checkpoints).
 
 For carving sub-windows out of an already-decoded buffer, use
 `WhisperCt2.Pcm.slice(samples, sample_rate, start_s, duration_s)` -
-it does the f32 byte math and bounds checking for you.
+it does the f32 byte math (4 bytes/sample) and bounds-checks against the
+buffer size, so a slice past the end fails loudly instead of decoding
+garbage.
+
+```elixir
+pcm = File.read!("call.pcm")          # f32 LE, 16 kHz mono, prepared upstream
+{:ok, turn} = WhisperCt2.Pcm.slice(pcm, model.sampling_rate, 12.3, 4.7)
+WhisperCt2.transcribe(model, {:pcm_f32, turn}, language: "en")
+```
 
 ## Word-level timestamps are opt-in
 
@@ -71,6 +79,22 @@ decoder attention) across every chunk in the batch. Cost is on the order
 of the alignment pass itself, not a second encoder forward. Use it for
 caption alignment or diarization-aware splicing; skip it when you only
 need segment timing.
+
+## Segment timestamps: `:with_timestamps`
+
+`:with_timestamps` defaults to `true`: the prompt asks Whisper to emit
+`<|t_..|>` tokens that split each 30 s chunk into sub-segments. Leave it
+on for stock OpenAI / `Systran/faster-whisper-*` checkpoints.
+
+Set `with_timestamps: false` for fine-tunes that ignore the timestamp
+instruction or were trained to emit plain text (e.g. some domain
+fine-tunes). The chunk's full text then becomes one segment spanning
+`[0, chunk_duration_s)` instead of being silently dropped.
+
+`:word_timestamps` implicitly forces `:with_timestamps` back to `true` -
+the DTW alignment needs the timestamp scaffolding. Don't combine
+`with_timestamps: false` with `word_timestamps: true` and expect the
+former to win.
 
 ## Initial prompt and prefix
 
@@ -140,35 +164,29 @@ the **resolved** values - `:auto` and `:default` are normalised at load time.
 
 CTranslate2 wants **mono `f32` PCM at the model's sample rate** (always
 16 kHz for published Whisper checkpoints), normalised to `-1.0..1.0`.
-`transcribe/3` accepts:
+`transcribe/3` and `transcribe_batch/3` accept exactly one shape:
 
-- a `.wav` path (16 kHz mono or stereo, 16/32-bit PCM, or 32-bit float) -
-  decoded by `WhisperCt2.Wav`;
-- `{:pcm_f32, binary}` - little-endian f32 samples (canonical form).
+- `{:pcm_f32, binary}` - little-endian f32 samples at the model's sample
+  rate.
 
-Bare-binary input is **rejected** - a typo'd path used to silently become
-garbage PCM. Non-`.wav` paths are also rejected at the boundary with a
-clear `:invalid_request` error.
-
-Anything else (mp3, opus, 44.1 kHz, 8 kHz, multichannel beyond stereo)
-**must be resampled upstream**. There is no built-in decoder. Use ffmpeg:
+There is **no built-in decoder**. Paths, raw bare binaries, WAV bytes,
+MP3, etc. are all rejected at the boundary with a clear
+`:invalid_request` error. Decoding, downmixing, and resampling are the
+caller's job; use `ffmpeg`, Membrane, or your platform audio stack
+upstream.
 
 ```bash
-ffmpeg -i input.mp3 -ar 16000 -ac 1 -c:a pcm_s16le output.wav
+ffmpeg -i input.mp3 -ar 16000 -ac 1 -f f32le output.pcm
+```
+
+```elixir
+pcm = File.read!("output.pcm")
+WhisperCt2.transcribe(model, {:pcm_f32, pcm}, language: "en")
 ```
 
 For microphone or streaming sources, build the f32 buffer yourself and pass
 `{:pcm_f32, binary}`. The authoritative sample rate is `model.sampling_rate`
 on the loaded struct, not a hard-coded `16_000`.
-
-For in-memory WAV bytes (HTTP uploads, S3 fetches, anything you do not want
-to spill to disk), use `WhisperCt2.Wav.decode/1` directly instead of writing
-a temp file:
-
-```elixir
-{:ok, samples} = WhisperCt2.Wav.decode(uploaded_bytes)
-WhisperCt2.transcribe(model, {:pcm_f32, samples}, language: "en")
-```
 
 Audio longer than 30 s is split into Whisper-window chunks automatically;
 per-chunk text is in `transcription.segments`.
@@ -244,7 +262,10 @@ x86_64 macOS and Windows are not shipped - source build only.
 ## Do not
 
 - Do not call `load_model/2` per transcription.
-- Do not pass mp3/opus/non-16 kHz audio expecting it to work.
+- Do not pass `.wav` (or any other file) paths, raw bare binaries,
+  encoded WAV bytes, mp3, opus, or non-16 kHz audio to `transcribe/3` -
+  the audio contract is `{:pcm_f32, binary}` only. Decode and resample
+  upstream (`ffmpeg -ar 16000 -ac 1 -f f32le`).
 - Do not assume `device: :cuda` succeeds; check `available_devices/0` or
   use `:auto`.
 - Do not share a single `%Model{}` to get parallel inference; pool replicas.
