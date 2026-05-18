@@ -3,10 +3,11 @@ defmodule WhisperCt2.Pcm do
   Helpers for slicing little-endian f32 PCM buffers without re-decoding the
   source audio.
 
-  A diarization-driven workflow typically decodes the master WAV once via
-  `WhisperCt2.Wav.read_file/1` and then runs many short transcribe calls
-  over per-turn slices. `slice/4` does the byte math (4 bytes per sample at
-  `sample_rate` samples/second) and bounds-checks against the buffer size.
+  A diarization-driven workflow typically decodes the master audio to
+  f32 PCM once (upstream of this library) and then runs many short
+  transcribe calls over per-turn slices. `slice/4` does the byte math
+  (4 bytes per sample at `sample_rate` samples/second) and bounds-checks
+  against the buffer size.
   """
 
   alias WhisperCt2.Error

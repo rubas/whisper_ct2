@@ -2,8 +2,8 @@
 
 `whisper_ct2` is an Elixir library for running OpenAI Whisper speech-to-text
 models inside the BEAM. It loads CTranslate2-converted Whisper models through a
-Rustler NIF, so Elixir code can transcribe WAV files or f32 PCM buffers without
-starting Python or a separate inference service.
+Rustler NIF, so Elixir code can transcribe f32 PCM buffers without starting
+Python or a separate inference service.
 
 CTranslate2 is the speed-optimised C++ inference engine that powers
 [`faster-whisper`](https://github.com/SYSTRAN/faster-whisper) — 4-8x faster
@@ -122,8 +122,12 @@ fails.
 ```elixir
 {:ok, model} = WhisperCt2.load_model("models/faster-whisper-tiny.en")
 
+# Decode/resample to 16 kHz mono f32 PCM upstream (ffmpeg, Membrane,
+# anything that produces little-endian f32 bytes).
+pcm = File.read!("jfk.pcm")
+
 {:ok, %WhisperCt2.Transcription{text: text, segments: segs}} =
-  WhisperCt2.transcribe(model, "jfk.wav", language: "en")
+  WhisperCt2.transcribe(model, {:pcm_f32, pcm}, language: "en")
 
 IO.puts(text)
 # => "And so, my fellow Americans ask not what your country can do for you ..."
@@ -142,16 +146,20 @@ per-word timing.
 
 CTranslate2 expects **mono `f32` PCM samples** at the model's sample rate
 (16 kHz for every published Whisper checkpoint), normalized to the
-`-1.0..1.0` range. `transcribe/3` accepts:
+`-1.0..1.0` range. `transcribe/3` and `transcribe_batch/3` accept exactly
+one shape:
 
-- a `.wav` path (16 kHz mono or stereo, 16/32-bit PCM, or 32-bit float),
-  decoded by the built-in `WhisperCt2.Wav` module;
-- `{:pcm_f32, binary}` with little-endian f32 samples.
+- `{:pcm_f32, binary}` - little-endian f32 samples at the model's
+  sample rate.
 
-Non-`.wav` paths and bare binaries are rejected up front - a typo'd path
-used to silently turn into garbage PCM; now it returns a clear
-`:invalid_request` error. For in-memory WAV bytes use
-`WhisperCt2.Wav.decode/1` then pass `{:pcm_f32, samples}`.
+Anything else (paths, raw bare binaries, WAV bytes, MP3, 44.1 kHz, ...)
+is rejected at the boundary with an `:invalid_request` error. There is
+no bundled audio decoder; decode, downmix, and resample upstream using
+your tool of choice. For a one-shot file conversion:
+
+```bash
+ffmpeg -i input.mp3 -ar 16000 -ac 1 -f f32le output.pcm
+```
 
 Audio longer than 30 s is chunked into Whisper windows automatically; the
 encoder runs once across every chunk in the batch.
@@ -159,13 +167,16 @@ encoder runs once across every chunk in the batch.
 ### Batched transcribe and word timestamps
 
 ```elixir
-# Diarization-driven workflow: one master decode, many short splices.
-{:ok, samples} = WhisperCt2.Wav.read_file("call.wav")
-turns = [
-  WhisperCt2.Pcm.slice(samples, 16_000, 0.0, 3.2),
-  WhisperCt2.Pcm.slice(samples, 16_000, 3.2, 4.5),
-  # ...
-] |> Enum.map(fn {:ok, bin} -> {:pcm_f32, bin} end)
+# Diarization-driven workflow: one master decode upstream, many short
+# splices fed in as PCM byte ranges.
+samples = File.read!("call.pcm")
+turns =
+  [
+    WhisperCt2.Pcm.slice(samples, 16_000, 0.0, 3.2),
+    WhisperCt2.Pcm.slice(samples, 16_000, 3.2, 4.5)
+    # ...
+  ]
+  |> Enum.map(fn {:ok, bin} -> {:pcm_f32, bin} end)
 
 {:ok, transcriptions} =
   WhisperCt2.transcribe_batch(model, turns, language: "en", word_timestamps: true)
@@ -178,7 +189,7 @@ attaches `%Word{}` entries to each segment.
 ### Decoding biases
 
 ```elixir
-WhisperCt2.transcribe(model, "talk.wav",
+WhisperCt2.transcribe(model, {:pcm_f32, talk_pcm},
   language: "en",
   initial_prompt: "Discussion of CTranslate2, BEAM, and Whisper internals.",
   prefix: "Welcome back to the show."

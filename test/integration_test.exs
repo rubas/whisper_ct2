@@ -20,14 +20,14 @@ defmodule WhisperCt2.IntegrationTest do
 
   setup_all do
     model_dir = TestFixtures.ensure_model!()
-    audio_path = TestFixtures.ensure_jfk!()
+    audio_pcm = TestFixtures.ensure_jfk_pcm!()
     {:ok, model} = WhisperCt2.load_model(model_dir)
-    {:ok, model: model, audio_path: audio_path}
+    {:ok, model: model, audio: {:pcm_f32, audio_pcm}, audio_pcm: audio_pcm}
   end
 
-  test "transcribes the JFK clip to the expected sentence", %{model: model, audio_path: path} do
+  test "transcribes the JFK clip to the expected sentence", %{model: model, audio: audio} do
     assert {:ok, %Transcription{text: text, segments: segs, language: lang, duration_s: dur}} =
-             WhisperCt2.transcribe(model, path, language: "en")
+             WhisperCt2.transcribe(model, audio, language: "en")
 
     assert lang == "en"
     assert dur > 5.0 and dur < 15.0
@@ -47,10 +47,10 @@ defmodule WhisperCt2.IntegrationTest do
 
   test "word_timestamps attaches per-word timing to every segment", %{
     model: model,
-    audio_path: path
+    audio: audio
   } do
     assert {:ok, %Transcription{segments: segs, duration_s: dur}} =
-             WhisperCt2.transcribe(model, path, language: "en", word_timestamps: true)
+             WhisperCt2.transcribe(model, audio, language: "en", word_timestamps: true)
 
     # Contract: when :word_timestamps is requested, every segment carries a
     # non-nil :words list. A silent nil here used to mean we'd swallowed an
@@ -77,15 +77,14 @@ defmodule WhisperCt2.IntegrationTest do
   end
 
   test "transcribe_batch keeps distinct audios distinct",
-       %{model: model, audio_path: path} do
-    {:ok, full_pcm} = WhisperCt2.Wav.read_file(path)
+       %{model: model, audio: audio, audio_pcm: full_pcm} do
     three_s_bytes = 3 * 16_000 * 4
     <<short::binary-size(^three_s_bytes), _::binary>> = full_pcm
 
     assert {:ok, [full, partial]} =
              WhisperCt2.transcribe_batch(
                model,
-               [path, {:pcm_f32, short}],
+               [audio, {:pcm_f32, short}],
                language: "en"
              )
 
@@ -97,15 +96,15 @@ defmodule WhisperCt2.IntegrationTest do
   end
 
   test "transcribe_batch with identical inputs produces identical transcripts",
-       %{model: model, audio_path: path} do
+       %{model: model, audio: audio} do
     assert {:ok, [t1, t2]} =
-             WhisperCt2.transcribe_batch(model, [path, path], language: "en")
+             WhisperCt2.transcribe_batch(model, [audio, audio], language: "en")
 
     assert normalised(t1.text) == normalised(t2.text)
     assert t1.language == "en" and t2.language == "en"
   end
 
-  test "initial_prompt is accepted on the .en model", %{model: model, audio_path: path} do
+  test "initial_prompt is accepted on the .en model", %{model: model, audio: audio} do
     # Smoke test only: tiny.en is known to sometimes empty its output when
     # given an initial_prompt that derails its decoding. The contract we
     # care about is that the call wires through to the NIF without error
@@ -113,7 +112,7 @@ defmodule WhisperCt2.IntegrationTest do
     # of `initial_prompt` is covered by the multilingual checkpoint test
     # block below.
     assert {:ok, %Transcription{language: lang}} =
-             WhisperCt2.transcribe(model, path,
+             WhisperCt2.transcribe(model, audio,
                language: "en",
                initial_prompt: "Presidential address by John F. Kennedy."
              )
@@ -122,13 +121,13 @@ defmodule WhisperCt2.IntegrationTest do
   end
 
   test "rejects non-en :language on an English-only checkpoint",
-       %{model: model, audio_path: path} do
+       %{model: model, audio: audio} do
     # Decoding would silently run English (the `.en` SOT block is
     # `[<|startoftranscript|>]` and ignores any pinned language token),
     # but the returned language used to echo "de" — misrouting any
     # downstream language-based logic. Pin must be rejected loudly.
     assert {:error, %WhisperCt2.Error{reason: :invalid_request, message: msg}} =
-             WhisperCt2.transcribe(model, path, language: "de")
+             WhisperCt2.transcribe(model, audio, language: "de")
 
     assert msg =~ "English-only"
   end
@@ -156,12 +155,12 @@ defmodule WhisperCt2.IntegrationTest do
     @golden_dir Path.expand("fixtures/words_golden", __DIR__)
 
     test "matches the faster-whisper reference within 60 ms per word",
-         %{model: model, audio_path: path} do
+         %{model: model, audio: audio} do
       golden = load_golden_words()
       refute Enum.empty?(golden)
 
       assert {:ok, %Transcription{segments: segs}} =
-               WhisperCt2.transcribe(model, path, language: "en", word_timestamps: true)
+               WhisperCt2.transcribe(model, audio, language: "en", word_timestamps: true)
 
       ours = Enum.flat_map(segs, &(&1.words || []))
 
@@ -247,8 +246,7 @@ defmodule WhisperCt2.IntegrationTest do
     # tests do this because the clip is ~11 s = one chunk.
 
     test "stitches segments across three concatenated JFK chunks",
-         %{model: model, audio_path: path} do
-      {:ok, single} = WhisperCt2.Wav.read_file(path)
+         %{model: model, audio_pcm: single} do
       tripled = single <> single <> single
 
       assert {:ok, %Transcription{segments: segs, duration_s: dur}} =
@@ -273,7 +271,7 @@ defmodule WhisperCt2.IntegrationTest do
     @tag :slow
     test "transcribes correctly with :int8" do
       model_dir = TestFixtures.ensure_model!()
-      audio = TestFixtures.ensure_jfk!()
+      audio = {:pcm_f32, TestFixtures.ensure_jfk_pcm!()}
 
       assert {:ok, model} = WhisperCt2.load_model(model_dir, compute_type: :int8)
       assert model.compute_type == :int8
@@ -287,11 +285,11 @@ defmodule WhisperCt2.IntegrationTest do
 
   describe "stability across repeated and concurrent calls" do
     test "transcribe/3 is deterministic across repeated calls",
-         %{model: model, audio_path: path} do
+         %{model: model, audio: audio} do
       [first | rest] =
         for _ <- 1..3 do
           assert {:ok, %Transcription{text: t}} =
-                   WhisperCt2.transcribe(model, path, language: "en")
+                   WhisperCt2.transcribe(model, audio, language: "en")
 
           normalised(t)
         end
@@ -303,11 +301,11 @@ defmodule WhisperCt2.IntegrationTest do
     end
 
     test "transcribe/3 is safe to call concurrently on one model",
-         %{model: model, audio_path: path} do
+         %{model: model, audio: audio} do
       results =
         1..3
         |> Task.async_stream(
-          fn _ -> WhisperCt2.transcribe(model, path, language: "en") end,
+          fn _ -> WhisperCt2.transcribe(model, audio, language: "en") end,
           max_concurrency: 3,
           timeout: 120_000,
           ordered: false
@@ -364,14 +362,14 @@ defmodule WhisperCt2.IntegrationTest do
 
     setup do
       model_dir = TestFixtures.ensure_multilingual_model!()
-      audio_path = TestFixtures.ensure_jfk!()
+      audio = {:pcm_f32, TestFixtures.ensure_jfk_pcm!()}
       {:ok, model} = WhisperCt2.load_model(model_dir)
-      {:ok, model: model, audio_path: audio_path}
+      {:ok, model: model, audio: audio}
     end
 
-    test "transcribes with an explicit language", %{model: model, audio_path: path} do
+    test "transcribes with an explicit language", %{model: model, audio: audio} do
       assert {:ok, %Transcription{text: text, language: lang, segments: segs}} =
-               WhisperCt2.transcribe(model, path, language: "en")
+               WhisperCt2.transcribe(model, audio, language: "en")
 
       assert lang == "en"
       assert model.multilingual == true
@@ -379,9 +377,9 @@ defmodule WhisperCt2.IntegrationTest do
       assert normalised(text) =~ "country"
     end
 
-    test "auto-detects language when none is pinned", %{model: model, audio_path: path} do
+    test "auto-detects language when none is pinned", %{model: model, audio: audio} do
       assert {:ok, %Transcription{language: lang, text: text}} =
-               WhisperCt2.transcribe(model, path)
+               WhisperCt2.transcribe(model, audio)
 
       # JFK is unambiguously English.
       assert lang == "en"
@@ -389,9 +387,9 @@ defmodule WhisperCt2.IntegrationTest do
     end
 
     test "word_timestamps align within the clip on the multilingual model",
-         %{model: model, audio_path: path} do
+         %{model: model, audio: audio} do
       assert {:ok, %Transcription{segments: segs, duration_s: dur}} =
-               WhisperCt2.transcribe(model, path, language: "en", word_timestamps: true)
+               WhisperCt2.transcribe(model, audio, language: "en", word_timestamps: true)
 
       all_words = Enum.flat_map(segs, &(&1.words || []))
       assert all_words != []

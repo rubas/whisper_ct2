@@ -11,9 +11,10 @@ defmodule WhisperCt2 do
   ## Quickstart
 
       {:ok, model} = WhisperCt2.load_model("/path/to/faster-whisper-tiny")
+      pcm = File.read!("audio.pcm")
 
       {:ok, %WhisperCt2.Transcription{text: text, segments: segs}} =
-        WhisperCt2.transcribe(model, "audio.wav", language: "en")
+        WhisperCt2.transcribe(model, {:pcm_f32, pcm}, language: "en")
 
       IO.puts(text)
       for s <- segs, do: IO.puts("[\#{s.start}-\#{s.end}] \#{s.text}")
@@ -22,15 +23,16 @@ defmodule WhisperCt2 do
 
   CTranslate2 expects **mono `f32` PCM samples** at the model's
   `:sampling_rate` (16 kHz for every published Whisper checkpoint),
-  normalised to the `-1.0..1.0` range. `transcribe/3` accepts:
+  normalised to the `-1.0..1.0` range. `transcribe/3` and
+  `transcribe_batch/3` accept exactly one shape:
 
-  - a `.wav` path (16 kHz mono or stereo, 16/32-bit PCM, or 32-bit float),
-    decoded by the built-in `WhisperCt2.Wav` module;
-  - a `{:pcm_f32, binary}` tuple containing little-endian f32 samples.
+  - `{:pcm_f32, binary}` - little-endian f32 samples at the model's
+    sample rate.
 
-  Raw bare-binary input is rejected on purpose: a typo'd path used to
-  silently turn into garbage PCM. Use `{:pcm_f32, binary}` for in-memory
-  buffers.
+  Decoding `.wav`, resampling, downmixing, and any other format
+  conversion is the caller's job. There is no bundled audio decoder;
+  use `ffmpeg`, a dedicated library, or your platform's audio stack
+  before calling in.
 
   Audio longer than the Whisper 30 s window is chunked internally; the
   encoder runs once across every chunk in the batch. Diarization-driven
@@ -38,10 +40,10 @@ defmodule WhisperCt2 do
   `transcribe_batch/3`.
   """
 
-  alias WhisperCt2.{Error, Model, Native, Segment, Transcription, Wav, Word}
+  alias WhisperCt2.{Error, Model, Native, Segment, Transcription, Word}
 
   @typedoc "Audio sources accepted by `transcribe/3` and `transcribe_batch/3`."
-  @type audio :: Path.t() | {:pcm_f32, binary()}
+  @type audio :: {:pcm_f32, binary()}
 
   @typedoc "Options accepted by `transcribe/3` / `transcribe_batch/3`."
   @type transcribe_opt ::
@@ -49,6 +51,7 @@ defmodule WhisperCt2 do
           | {:initial_prompt, String.t() | nil}
           | {:prefix, String.t() | nil}
           | {:word_timestamps, boolean()}
+          | {:with_timestamps, boolean()}
           | {:beam_size, pos_integer()}
           | {:patience, float()}
           | {:length_penalty, float()}
@@ -138,7 +141,6 @@ defmodule WhisperCt2 do
   defp do_load_model(path, opts) do
     with {:ok, ref} <- native_call(Native.load_model(path, build_load_opts(opts))),
          {:ok, info} <- native_call(Native.model_info(ref)),
-         :ok <- assert_sampling_rate(info.sampling_rate, path),
          {:ok, device} <- decode_device(info.device),
          {:ok, compute_type} <- decode_compute_type(info.compute_type) do
       {:ok,
@@ -151,26 +153,6 @@ defmodule WhisperCt2 do
          device: device,
          compute_type: compute_type
        }}
-    end
-  end
-
-  # Every published Whisper checkpoint preprocesses at 16 kHz, and the
-  # in-tree WAV decoder hardcodes the same rate. Fail load loudly if a
-  # model reports anything else, rather than silently feeding it WAV
-  # samples at the wrong rate.
-  defp assert_sampling_rate(rate, path) do
-    expected = Wav.target_rate()
-
-    if rate == expected do
-      :ok
-    else
-      {:error,
-       Error.new(
-         :load_error,
-         "model sampling_rate does not match the bundled WAV decoder rate; \
-          resample upstream or load a 16 kHz checkpoint",
-         %{path: path, model_sampling_rate: rate, expected: expected}
-       )}
     end
   end
 
@@ -230,6 +212,13 @@ defmodule WhisperCt2 do
   - `:prefix` - forced text the generation must start with.
   - `:word_timestamps` - when `true`, attaches `:words` to each segment
     via one extra batched DTW alignment pass. Default `false`.
+  - `:with_timestamps` - when `true` (default) the prompt asks the model
+    to emit `<|t_..|>` timestamp tokens that split the output into
+    sub-segments. Set to `false` for fine-tunes that emit text without
+    timestamps; the chunk's full text becomes one segment spanning
+    `[0, chunk_duration_s)`. Implicitly forced to `true` whenever
+    `:word_timestamps` is enabled because alignment needs the timestamp
+    scaffolding.
   - Decoding knobs forwarded to CTranslate2: `:beam_size`, `:patience`,
     `:length_penalty`, `:repetition_penalty`, `:no_repeat_ngram_size`,
     `:sampling_temperature`, `:sampling_topk`, `:suppress_blank`,
@@ -329,31 +318,12 @@ defmodule WhisperCt2 do
     end
   end
 
-  defp resolve_audio(path) when is_binary(path) do
-    cond do
-      not File.regular?(path) ->
-        {:error,
-         Error.new(
-           :invalid_request,
-           "audio path does not exist or is not a regular file",
-           %{path: path}
-         )}
-
-      String.ends_with?(path, ".wav") ->
-        Wav.read_file(path)
-
-      true ->
-        {:error,
-         Error.new(
-           :invalid_request,
-           "only .wav paths are accepted; resample/decode upstream or pass {:pcm_f32, binary}",
-           %{path: path}
-         )}
-    end
-  end
-
   defp resolve_audio(_) do
-    {:error, Error.new(:invalid_request, "audio must be a .wav path or {:pcm_f32, binary}")}
+    {:error,
+     Error.new(
+       :invalid_request,
+       "audio must be {:pcm_f32, binary}; decode/resample upstream"
+     )}
   end
 
   # The three `build_*` functions pattern-match the NIF map shape
@@ -421,6 +391,7 @@ defmodule WhisperCt2 do
       initial_prompt: Keyword.get(opts, :initial_prompt),
       prefix: Keyword.get(opts, :prefix),
       word_timestamps: Keyword.get(opts, :word_timestamps),
+      with_timestamps: Keyword.get(opts, :with_timestamps),
       beam_size: Keyword.get(opts, :beam_size),
       patience: Keyword.get(opts, :patience),
       length_penalty: Keyword.get(opts, :length_penalty),
@@ -462,6 +433,7 @@ defmodule WhisperCt2 do
       initial_prompt: &valid_optional_string?/1,
       prefix: &valid_optional_string?/1,
       word_timestamps: &is_boolean/1,
+      with_timestamps: &is_boolean/1,
       beam_size: &positive_integer?/1,
       # `patience` is faster-whisper's beam-search patience; values < 1.0
       # are documented as effectively disabling it.

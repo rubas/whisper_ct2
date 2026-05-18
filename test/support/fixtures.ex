@@ -44,6 +44,21 @@ defmodule WhisperCt2.TestFixtures do
   @spec jfk_wav() :: Path.t()
   def jfk_wav, do: @jfk_path
 
+  @doc """
+  Returns the JFK clip as a little-endian f32 PCM binary at 16 kHz mono.
+
+  The library no longer decodes WAV - callers feed `{:pcm_f32, binary}`
+  directly. We decode the canonical fixture in memory via
+  `WhisperCt2.TestWav` on every `setup_all`; the decode is cheap
+  (~100 ms on an ~11 s clip) and avoiding a disk cache sidesteps any
+  question of stale PCM bytes when `@jfk_sha256` is bumped.
+  """
+  @spec ensure_jfk_pcm!() :: binary()
+  def ensure_jfk_pcm! do
+    ensure_jfk!()
+    WhisperCt2.TestWav.read_file!(@jfk_path)
+  end
+
   @spec ensure_model!() :: Path.t()
   def ensure_model! do
     File.mkdir_p!(@en_model_dir)

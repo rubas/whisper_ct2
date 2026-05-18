@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Breaking
+
+- Removed the bundled WAV decoder. `transcribe/3` and
+  `transcribe_batch/3` now accept only `{:pcm_f32, binary}`; decoding,
+  downmixing, and resampling are the caller's job. The `WhisperCt2.Wav`
+  module is gone. Use `ffmpeg -ar 16000 -ac 1 -f f32le` (or any other
+  audio stack) to produce the f32 PCM buffer upstream.
+
 ## 0.2.0
 
 Major refactor onto `ct2rs::sys::Whisper` directly. The NIF now owns the

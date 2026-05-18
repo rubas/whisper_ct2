@@ -50,24 +50,21 @@ defmodule WhisperCt2Test do
                WhisperCt2.transcribe(fake_model(), 42)
     end
 
-    test "rejects a bare binary that is not a .wav path" do
-      # Used to silently become garbage PCM; now must fail with a clear
-      # error so typo'd paths are caught at the boundary.
+    test "rejects a bare binary (path-style input was removed)" do
+      # transcribe/3 only accepts {:pcm_f32, binary} now; the caller is
+      # responsible for decoding/resampling. A bare binary used to be
+      # treated as a path-or-garbage; it must now fail at the boundary.
       assert {:error, %Error{reason: :invalid_request, message: msg}} =
                WhisperCt2.transcribe(fake_model(), <<0, 1, 2, 3>>)
 
-      assert msg =~ "does not exist" or msg =~ ".wav"
+      assert msg =~ ":pcm_f32"
     end
 
-    test "rejects a non-.wav path that exists on disk" do
-      path = Path.join(System.tmp_dir!(), "whisper_ct2_not_wav.mp3")
-      File.write!(path, "id3 garbage")
-      on_exit(fn -> File.rm(path) end)
-
+    test "rejects a string path" do
       assert {:error, %Error{reason: :invalid_request, message: msg}} =
-               WhisperCt2.transcribe(fake_model(), path)
+               WhisperCt2.transcribe(fake_model(), "/tmp/anything.wav")
 
-      assert msg =~ ".wav"
+      assert msg =~ ":pcm_f32"
     end
   end
 
