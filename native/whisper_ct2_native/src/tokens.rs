@@ -1,6 +1,6 @@
 #![allow(clippy::cast_precision_loss)]
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use ct2rs::tokenizers::hf;
 use tokenizers::Tokenizer as InnerTokenizer;
 
@@ -132,7 +132,19 @@ pub(crate) struct SubSegment {
 /// Parses a generated chunk's token IDs into `<|t_start|> text <|t_end|>`
 /// sub-segments. Token IDs `>= timestamp_begin` are treated as timestamps;
 /// anything before the first timestamp pair is discarded as preamble.
-pub(crate) fn split_sub_segments(token_ids: &[u32], timestamp_begin: u32) -> Vec<SubSegment> {
+///
+/// `chunk_duration_s` is the wall-clock length of the Whisper window
+/// (30 s for every published checkpoint). It is used as the fallback
+/// `end_in_chunk` when the model emits text without a closing
+/// `<|t_end|>` token, which faster-whisper handles the same way:
+/// some fine-tunes (notably the `notebotIE` Swiss-German variant) only
+/// reliably emit the opening timestamp, and dropping the trailing text
+/// silently is how multi-second turns turned into empty transcripts.
+pub(crate) fn split_sub_segments(
+    token_ids: &[u32],
+    timestamp_begin: u32,
+    chunk_duration_s: f32,
+) -> Vec<SubSegment> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < token_ids.len() {
@@ -149,9 +161,22 @@ pub(crate) fn split_sub_segments(token_ids: &[u32], timestamp_begin: u32) -> Vec
         while i < token_ids.len() && token_ids[i] < timestamp_begin {
             i += 1;
         }
+
         if i >= token_ids.len() {
+            // Unclosed pair: model emitted `<|t_start|> text [EOT]` with
+            // no closing timestamp. Flush the pending text with the
+            // chunk window's end as the fallback boundary instead of
+            // silently dropping it.
+            if text_start < token_ids.len() {
+                out.push(SubSegment {
+                    text_token_ids: token_ids[text_start..].to_vec(),
+                    start_in_chunk: timestamp_seconds(start_id, timestamp_begin),
+                    end_in_chunk: chunk_duration_s,
+                });
+            }
             break;
         }
+
         let end_id = token_ids[i];
         let text_end = i;
         i += 1;
@@ -187,6 +212,7 @@ mod tests {
     use super::*;
 
     const BEGIN: u32 = 50_000;
+    const CHUNK_S: f32 = 30.0;
 
     fn ts(offset: u32) -> u32 {
         BEGIN + offset
@@ -194,12 +220,12 @@ mod tests {
 
     #[test]
     fn split_sub_segments_returns_empty_for_no_tokens() {
-        assert!(split_sub_segments(&[], BEGIN).is_empty());
+        assert!(split_sub_segments(&[], BEGIN, CHUNK_S).is_empty());
     }
 
     #[test]
     fn split_sub_segments_discards_preamble_before_first_timestamp() {
-        let out = split_sub_segments(&[10, 20, ts(0), 100, 101, ts(100)], BEGIN);
+        let out = split_sub_segments(&[10, 20, ts(0), 100, 101, ts(100)], BEGIN, CHUNK_S);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].text_token_ids, vec![100, 101]);
         assert!((out[0].start_in_chunk - 0.0).abs() < 1e-6);
@@ -208,7 +234,7 @@ mod tests {
 
     #[test]
     fn split_sub_segments_handles_back_to_back_pairs() {
-        let out = split_sub_segments(&[ts(0), 100, ts(50), ts(50), 200, ts(150)], BEGIN);
+        let out = split_sub_segments(&[ts(0), 100, ts(50), ts(50), 200, ts(150)], BEGIN, CHUNK_S);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].text_token_ids, vec![100]);
         assert!((out[0].end_in_chunk - 1.0).abs() < 1e-6);
@@ -219,13 +245,39 @@ mod tests {
 
     #[test]
     fn split_sub_segments_skips_pairs_with_empty_text() {
-        let out = split_sub_segments(&[ts(0), ts(50)], BEGIN);
+        let out = split_sub_segments(&[ts(0), ts(50)], BEGIN, CHUNK_S);
         assert!(out.is_empty());
     }
 
     #[test]
-    fn split_sub_segments_drops_dangling_start_timestamp() {
-        let out = split_sub_segments(&[ts(0), 100], BEGIN);
+    fn split_sub_segments_flushes_text_after_unclosed_start_timestamp() {
+        // Some fine-tunes emit `<|t_start|> text [EOT]` without a closing
+        // timestamp. The text must be flushed with `chunk_duration_s` as
+        // the fallback end, not dropped.
+        let out = split_sub_segments(&[ts(0), 100, 101, 102], BEGIN, CHUNK_S);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].text_token_ids, vec![100, 101, 102]);
+        assert!((out[0].start_in_chunk - 0.0).abs() < 1e-6);
+        assert!((out[0].end_in_chunk - CHUNK_S).abs() < 1e-6);
+    }
+
+    #[test]
+    fn split_sub_segments_flushes_trailing_text_after_closed_pair() {
+        // Mixed case: one balanced pair followed by an unclosed
+        // `<|t_start|> text` tail. Both must appear in the output.
+        let out = split_sub_segments(&[ts(0), 100, ts(50), ts(60), 200, 201], BEGIN, CHUNK_S);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].text_token_ids, vec![100]);
+        assert_eq!(out[1].text_token_ids, vec![200, 201]);
+        assert!((out[1].start_in_chunk - 1.2).abs() < 1e-6);
+        assert!((out[1].end_in_chunk - CHUNK_S).abs() < 1e-6);
+    }
+
+    #[test]
+    fn split_sub_segments_drops_lone_dangling_start_timestamp() {
+        // `<|t_start|>` immediately followed by EOT (no text) still
+        // produces nothing — there is nothing to flush.
+        let out = split_sub_segments(&[ts(0)], BEGIN, CHUNK_S);
         assert!(out.is_empty());
     }
 

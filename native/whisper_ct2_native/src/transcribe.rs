@@ -13,16 +13,16 @@
     clippy::too_many_lines
 )]
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use ct2rs::sys::{Device, StorageView, Whisper, WhisperOptions};
 use ct2rs::tokenizers::hf;
 
-use crate::align::{ChunkAlignInput, DEFAULT_MEDIAN_FILTER_WIDTH, align_batch};
+use crate::align::{align_batch, ChunkAlignInput, DEFAULT_MEDIAN_FILTER_WIDTH};
 use crate::errors::{invalid_request, runtime_error};
 use crate::preprocessor::Preprocessor;
 use crate::tokens::{
-    NO_TIMESTAMPS, PromptParts, SOT, STARTOFPREV, SpecialTokens, SubSegment, TRANSCRIBE,
-    decode_ids, encode_plain, language_token, split_sub_segments, token_id,
+    decode_ids, encode_plain, language_token, split_sub_segments, token_id, PromptParts,
+    SpecialTokens, SubSegment, NO_TIMESTAMPS, SOT, STARTOFPREV, TRANSCRIBE,
 };
 
 /// Soft cap on the flat mel buffer (`total_chunks * n_mels * nb_max_frames`
@@ -264,11 +264,12 @@ pub(crate) fn transcribe_many(
         ));
     }
 
+    let chunk_duration_s = preprocessor.n_samples as f32 / preprocessor.sampling_rate as f32;
+
     let mut chunk_state: Vec<ChunkState> = Vec::with_capacity(total_chunks);
     for (audio_idx, chunks) in per_audio_chunks.iter().enumerate() {
         for within_audio_idx in 0..chunks.len() {
-            let chunk_offset_s = within_audio_idx as f32 * preprocessor.n_samples as f32
-                / preprocessor.sampling_rate as f32;
+            let chunk_offset_s = within_audio_idx as f32 * chunk_duration_s;
             let global_idx = chunk_offsets[audio_idx] + within_audio_idx;
 
             let token_ids = generated[global_idx]
@@ -281,7 +282,11 @@ pub(crate) fn transcribe_many(
                 .collect::<Result<_>>()?;
 
             chunk_state.push(ChunkState {
-                sub_segments: split_sub_segments(&token_ids_u32, specials.timestamp_begin),
+                sub_segments: split_sub_segments(
+                    &token_ids_u32,
+                    specials.timestamp_begin,
+                    chunk_duration_s,
+                ),
                 offset_s: chunk_offset_s,
                 num_frames: encoder_frames_for_chunk(
                     audios[audio_idx].len(),
