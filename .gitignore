@@ -14,9 +14,14 @@ whisper_ct2-*.tar
 native/*/target/
 priv/native/
 
-# Test fixtures — downloaded on demand by test/support/fixtures.ex.
-# Whole directory ignored; no checked-in fixtures.
-test/fixtures/
+# Test fixtures — most are downloaded on demand by
+# test/support/fixtures.ex. The golden parity fixtures are the
+# exception: small, version-pinned, checked in so parity tests run
+# without network access. Regenerate via the corresponding scripts
+# under tools/.
+test/fixtures/*
+!test/fixtures/mel_golden/
+!test/fixtures/words_golden/
 
 # Local caches
 .cargo-home/

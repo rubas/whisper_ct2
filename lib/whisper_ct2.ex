@@ -2,62 +2,53 @@ defmodule WhisperCt2 do
   @moduledoc """
   Native Elixir bindings for Whisper speech-to-text via CTranslate2.
 
-  This library calls CTranslate2 directly through a Rustler NIF wrapping the
-  [`ct2rs`](https://crates.io/crates/ct2rs) crate. There is no Python runtime
-  involved.
+  Calls `ct2rs::sys::Whisper` directly through a Rustler NIF: no Python, no
+  HTTP gateway. The NIF owns the mel spectrogram, tokenizer, and prompt
+  construction, so structured per-segment results, `:initial_prompt` /
+  `:prefix` biasing, word-level timestamps, and batched transcribe across
+  multiple audios are all first-class.
 
   ## Quickstart
 
       {:ok, model} = WhisperCt2.load_model("/path/to/faster-whisper-tiny")
-      {:ok, %WhisperCt2.Transcription{text: text}} =
+
+      {:ok, %WhisperCt2.Transcription{text: text, segments: segs}} =
         WhisperCt2.transcribe(model, "audio.wav", language: "en")
+
       IO.puts(text)
-
-  ## Model files
-
-  Point `load_model/2` at a directory containing these CT2 Whisper files:
-
-  - `model.bin`
-  - `config.json`
-  - `tokenizer.json`
-  - `vocabulary.txt`
-  - `preprocessor_config.json` (mel filter constants — copy from
-    `openai/whisper-tiny.en` if your CT2 conversion is missing it; all
-    Whisper sizes share the same file)
-
-  The [`Systran/faster-whisper-*`](https://huggingface.co/Systran) repos
-  ship the first four directly.
+      for s <- segs, do: IO.puts("[\#{s.start}-\#{s.end}] \#{s.text}")
 
   ## Audio contract
 
   CTranslate2 expects **mono `f32` PCM samples** at the model's
-  `:sampling_rate` (16 kHz for every published Whisper checkpoint), normalized
-  to the `-1.0..1.0` range. `transcribe/3` accepts:
+  `:sampling_rate` (16 kHz for every published Whisper checkpoint),
+  normalised to the `-1.0..1.0` range. `transcribe/3` accepts:
 
-  - a path to a `.wav` file (16 kHz mono, 16-bit or 32-bit PCM, or 32-bit float)
-    — decoded by the built-in `WhisperCt2.Wav` module;
-  - a `{:pcm_f32, binary}` tuple containing little-endian `f32` samples — the
-    canonical form CTranslate2 consumes;
-  - a bare `binary` already in little-endian `f32` form (treated as
-    `{:pcm_f32, binary}`).
+  - a `.wav` path (16 kHz mono or stereo, 16/32-bit PCM, or 32-bit float),
+    decoded by the built-in `WhisperCt2.Wav` module;
+  - a `{:pcm_f32, binary}` tuple containing little-endian f32 samples.
 
-  If you build samples yourself (microphone, resampler, etc.), hand them in
-  via `{:pcm_f32, binary}`. The authoritative sample rate is
-  `model.sampling_rate` on a loaded model.
+  Raw bare-binary input is rejected on purpose: a typo'd path used to
+  silently turn into garbage PCM. Use `{:pcm_f32, binary}` for in-memory
+  buffers.
 
-  Audio longer than the Whisper 30 s window is split internally by
-  `ct2rs::Whisper`; per-chunk text is returned in `Transcription.segments`.
+  Audio longer than the Whisper 30 s window is chunked internally; the
+  encoder runs once across every chunk in the batch. Diarization-driven
+  workflows that need many short splices should use
+  `transcribe_batch/3`.
   """
 
-  alias WhisperCt2.{Error, Model, Native, Transcription, Wav}
+  alias WhisperCt2.{Error, Model, Native, Segment, Transcription, Wav, Word}
 
-  @typedoc "Audio sources accepted by `transcribe/3`."
-  @type audio :: Path.t() | binary() | {:pcm_f32, binary()}
+  @typedoc "Audio sources accepted by `transcribe/3` and `transcribe_batch/3`."
+  @type audio :: Path.t() | {:pcm_f32, binary()}
 
-  @typedoc "Options accepted by `transcribe/3`."
+  @typedoc "Options accepted by `transcribe/3` / `transcribe_batch/3`."
   @type transcribe_opt ::
           {:language, String.t() | nil}
-          | {:timestamp, boolean()}
+          | {:initial_prompt, String.t() | nil}
+          | {:prefix, String.t() | nil}
+          | {:word_timestamps, boolean()}
           | {:beam_size, pos_integer()}
           | {:patience, float()}
           | {:length_penalty, float()}
@@ -68,9 +59,6 @@ defmodule WhisperCt2 do
           | {:suppress_blank, boolean()}
           | {:max_length, pos_integer()}
           | {:num_hypotheses, pos_integer()}
-          | {:return_scores, boolean()}
-          | {:return_logits_vocab, boolean()}
-          | {:return_no_speech_prob, boolean()}
           | {:max_initial_timestamp_index, non_neg_integer()}
           | {:suppress_tokens, [integer()]}
 
@@ -78,39 +66,10 @@ defmodule WhisperCt2 do
   @type load_opt ::
           {:device, :cpu | :cuda | :auto}
           | {:compute_type, Model.compute_type()}
-          | {:device_indices, [non_neg_integer()]}
+          | {:device_indices, [non_neg_integer(), ...]}
           | {:num_threads_per_replica, non_neg_integer()}
           | {:max_queued_batches, integer()}
           | {:cpu_core_offset, integer()}
-
-  @load_options [
-    :device,
-    :compute_type,
-    :device_indices,
-    :num_threads_per_replica,
-    :max_queued_batches,
-    :cpu_core_offset
-  ]
-
-  @transcribe_options [
-    :language,
-    :timestamp,
-    :beam_size,
-    :patience,
-    :length_penalty,
-    :repetition_penalty,
-    :no_repeat_ngram_size,
-    :sampling_temperature,
-    :sampling_topk,
-    :suppress_blank,
-    :max_length,
-    :num_hypotheses,
-    :return_scores,
-    :return_logits_vocab,
-    :return_no_speech_prob,
-    :max_initial_timestamp_index,
-    :suppress_tokens
-  ]
 
   @devices [:cpu, :cuda, :auto]
   @compute_types [
@@ -129,50 +88,45 @@ defmodule WhisperCt2 do
   @doc """
   Reports CTranslate2 device support for this build.
 
-  Returns a map with `:cpu` and `:cuda` device counts, plus `:cuda_supported`
-  indicating whether the NIF was built with CUDA enabled. Build with CUDA
-  support via:
-
-      WHISPER_CT2_FEATURES=cuda-dynamic mix compile
-
-  The `cuda-dynamic` feature defers loading `libcudart` until the GPU is
-  actually used, so the same artefact works on CPU-only machines.
+  Returns `{:ok, %{cpu: n, cuda: n, cuda_supported: bool}}` on success.
+  `cuda_supported` reflects compile-time CUDA features (build with
+  `WHISPER_CT2_FEATURES=cuda-dynamic mix compile` to enable). `cuda` is the
+  count of CUDA devices visible at runtime, or `0` when CUDA is not built in.
   """
-  @spec available_devices() :: %{
-          cpu: non_neg_integer(),
-          cuda: non_neg_integer(),
-          cuda_supported: boolean()
-        }
+  @spec available_devices() ::
+          {:ok, %{cpu: non_neg_integer(), cuda: non_neg_integer(), cuda_supported: boolean()}}
+          | {:error, Error.t()}
   def available_devices do
-    {:ok, info} = Native.available_devices()
-    info
+    case Native.available_devices() do
+      {:ok, info} -> {:ok, info}
+      {:error, payload} -> {:error, Error.from_native(payload)}
+    end
   end
 
   @doc """
   Loads a CTranslate2 Whisper model from a directory.
 
+  See the `WhisperCt2` module doc for required model files.
+
   ## Options
 
-  - `:device` - `:cpu`, `:cuda`, or `:auto` (default). `:auto` picks CUDA when
-    the binary was built with CUDA support and at least one CUDA device is
-    visible; otherwise CPU.
+  - `:device` - `:cpu`, `:cuda`, or `:auto` (default). `:auto` picks CUDA
+    when the binary was built with CUDA support and a device is visible;
+    otherwise CPU.
   - `:compute_type` - precision used at inference. `:default` keeps the
-    model's stored quantisation; `:auto` picks the fastest supported on this
-    device. Other choices: `:float32`, `:float16`, `:bfloat16`, `:int8`,
-    `:int8_float32`, `:int8_float16`, `:int8_bfloat16`, `:int16`.
+    model's stored quantisation; `:auto` picks the fastest supported on
+    this device.
   - `:device_indices` - non-empty list of GPU indices (default `[0]`).
-  - `:num_threads_per_replica` - intra-op threads. `0` (default) lets
-    CTranslate2 pick.
-  - `:max_queued_batches` - CTranslate2 batcher queue depth.
-  - `:cpu_core_offset` - first CPU core to bind worker threads to.
+  - `:num_threads_per_replica` - intra-op threads. `0` lets CTranslate2 pick.
+  - `:max_queued_batches`, `:cpu_core_offset` - passed through to
+    CTranslate2.
   """
   @spec load_model(Path.t(), [load_opt()]) :: {:ok, Model.t()} | {:error, Error.t()}
   def load_model(path, opts \\ [])
 
   def load_model(path, opts) when is_binary(path) and is_list(opts) do
     with :ok <- validate_non_empty_string(path, :path),
-         :ok <- validate_known_options(opts, @load_options),
-         :ok <- validate_load_options(opts) do
+         :ok <- validate_options(opts, load_validators()) do
       do_load_model(path, opts)
     end
   end
@@ -182,25 +136,69 @@ defmodule WhisperCt2 do
   end
 
   defp do_load_model(path, opts) do
-    case Native.load_model(path, build_load_opts(opts)) do
-      {:ok, ref} ->
-        {:ok, info} = Native.model_info(ref)
-
-        {:ok,
-         %Model{
-           ref: ref,
-           path: path,
-           sampling_rate: info.sampling_rate,
-           n_samples: info.n_samples,
-           multilingual: info.multilingual,
-           device: String.to_atom(info.device),
-           compute_type: String.to_atom(info.compute_type)
-         }}
-
-      {:error, payload} ->
-        {:error, Error.from_native(payload)}
+    with {:ok, ref} <- native_call(Native.load_model(path, build_load_opts(opts))),
+         {:ok, info} <- native_call(Native.model_info(ref)),
+         :ok <- assert_sampling_rate(info.sampling_rate, path),
+         {:ok, device} <- decode_device(info.device),
+         {:ok, compute_type} <- decode_compute_type(info.compute_type) do
+      {:ok,
+       %Model{
+         ref: ref,
+         path: path,
+         sampling_rate: info.sampling_rate,
+         n_samples: info.n_samples,
+         multilingual: info.multilingual,
+         device: device,
+         compute_type: compute_type
+       }}
     end
   end
+
+  # Every published Whisper checkpoint preprocesses at 16 kHz, and the
+  # in-tree WAV decoder hardcodes the same rate. Fail load loudly if a
+  # model reports anything else, rather than silently feeding it WAV
+  # samples at the wrong rate.
+  defp assert_sampling_rate(rate, path) do
+    expected = Wav.target_rate()
+
+    if rate == expected do
+      :ok
+    else
+      {:error,
+       Error.new(
+         :load_error,
+         "model sampling_rate does not match the bundled WAV decoder rate; \
+          resample upstream or load a 16 kHz checkpoint",
+         %{path: path, model_sampling_rate: rate, expected: expected}
+       )}
+    end
+  end
+
+  @device_atoms Map.new(@devices, fn a -> {Atom.to_string(a), a} end)
+  @compute_type_atoms Map.new(@compute_types, fn a -> {Atom.to_string(a), a} end)
+
+  defp decode_device(label) when is_binary(label) do
+    case Map.fetch(@device_atoms, label) do
+      {:ok, atom} ->
+        {:ok, atom}
+
+      :error ->
+        {:error, Error.new(:runtime_error, "NIF reported unknown device", %{device: label})}
+    end
+  end
+
+  defp decode_compute_type(label) when is_binary(label) do
+    case Map.fetch(@compute_type_atoms, label) do
+      {:ok, atom} ->
+        {:ok, atom}
+
+      :error ->
+        {:error, Error.new(:runtime_error, "NIF reported unknown compute_type", %{compute_type: label})}
+    end
+  end
+
+  defp native_call({:ok, _} = ok), do: ok
+  defp native_call({:error, payload}), do: {:error, Error.from_native(payload)}
 
   defp build_load_opts(opts) do
     %{
@@ -215,40 +213,37 @@ defmodule WhisperCt2 do
 
   defp atom_to_string(nil), do: nil
   defp atom_to_string(value) when is_atom(value), do: Atom.to_string(value)
-  defp atom_to_string(value) when is_binary(value), do: value
 
   @doc """
   Transcribes `audio` using `model`.
 
-  Returns `{:ok, %WhisperCt2.Transcription{}}` on success.
+  Returns `{:ok, %WhisperCt2.Transcription{}}` whose `:segments` carry
+  absolute start/end times, `no_speech_prob`, `avg_logprob`, the
+  underlying text tokens, and (when `:word_timestamps` is set) per-word
+  timing. `no_speech_prob` and `avg_logprob` are always populated.
 
   ## Options
 
-  All CTranslate2 `WhisperOptions` knobs are accepted. Unset values fall
-  through to the CTranslate2 defaults.
-
-  - `:language` - ISO code (`"en"`); `nil` auto-detects.
-  - `:timestamp` - include `<|t_..|>` tokens in the output (default `false`).
-  - `:beam_size` - beam-search width (`> 0`).
-  - `:patience`, `:length_penalty`, `:repetition_penalty` - decoding penalties.
-  - `:no_repeat_ngram_size` - disallow repeated n-grams of this size.
-  - `:sampling_temperature`, `:sampling_topk` - sampling controls.
-  - `:suppress_blank` - suppress the leading blank token.
-  - `:suppress_tokens` - list of token IDs to suppress.
-  - `:max_length` - max generated tokens per chunk.
-  - `:num_hypotheses` - number of decoded hypotheses.
-  - `:return_scores`, `:return_logits_vocab`, `:return_no_speech_prob` -
-    forwarded to CTranslate2; the public surface still returns text only.
-  - `:max_initial_timestamp_index` - cap the first timestamp token.
+  - `:language` - ISO code (`"en"`). `nil` (default) auto-detects.
+  - `:initial_prompt` - free-text context prepended via `<|startofprev|>`
+    to bias decoding.
+  - `:prefix` - forced text the generation must start with.
+  - `:word_timestamps` - when `true`, attaches `:words` to each segment
+    via one extra batched DTW alignment pass. Default `false`.
+  - Decoding knobs forwarded to CTranslate2: `:beam_size`, `:patience`,
+    `:length_penalty`, `:repetition_penalty`, `:no_repeat_ngram_size`,
+    `:sampling_temperature`, `:sampling_topk`, `:suppress_blank`,
+    `:max_length`, `:num_hypotheses`, `:max_initial_timestamp_index`,
+    `:suppress_tokens`.
   """
   @spec transcribe(Model.t(), audio(), [transcribe_opt()]) ::
           {:ok, Transcription.t()} | {:error, Error.t()}
   def transcribe(model, audio, opts \\ [])
 
   def transcribe(%Model{} = model, audio, opts) when is_list(opts) do
-    with :ok <- validate_known_options(opts, @transcribe_options),
-         :ok <- validate_transcribe_options(opts) do
-      dispatch_audio(model, audio, opts)
+    with :ok <- validate_options(opts, transcribe_validators()),
+         {:ok, samples} <- resolve_audio(audio) do
+      do_transcribe(model, samples, opts)
     end
   end
 
@@ -256,46 +251,176 @@ defmodule WhisperCt2 do
     {:error, Error.new(:invalid_request, "expected a %WhisperCt2.Model{} and a keyword list")}
   end
 
-  defp dispatch_audio(%Model{} = model, path, opts) when is_binary(path) do
-    if String.ends_with?(path, ".wav") and File.regular?(path) do
-      with {:ok, samples} <- Wav.read_file(path) do
-        do_transcribe(model, samples, opts)
-      end
-    else
-      do_transcribe(model, path, opts)
-    end
-  end
-
-  defp dispatch_audio(%Model{} = model, {:pcm_f32, samples}, opts) when is_binary(samples) do
-    do_transcribe(model, samples, opts)
-  end
-
-  defp dispatch_audio(_model, _audio, _opts) do
-    {:error, Error.new(:invalid_request, "unsupported audio input")}
-  end
-
   defp do_transcribe(%Model{ref: ref}, samples, opts) do
-    if rem(byte_size(samples), 4) != 0 do
-      {:error, Error.new(:invalid_request, "PCM binary length must be a multiple of 4 (f32)")}
-    else
-      case Native.transcribe(ref, samples, build_transcribe_opts(opts)) do
-        {:ok, segments} ->
-          {:ok,
-           %Transcription{
-             text: segments |> Enum.join(" ") |> String.trim(),
-             segments: segments
-           }}
-
-        {:error, payload} ->
-          {:error, Error.from_native(payload)}
-      end
+    case Native.transcribe(ref, samples, build_transcribe_opts(opts)) do
+      {:ok, payload} -> {:ok, build_transcription(payload)}
+      {:error, payload} -> {:error, Error.from_native(payload)}
     end
+  end
+
+  @doc """
+  Transcribes a list of audios in one batched `generate` call. Every
+  chunk of every input shares a single encoder forward pass; output
+  preserves input order.
+
+  Options are the same as `transcribe/3`. `:language` applies to every
+  audio in the batch; pass `nil` to auto-detect per-audio.
+  """
+  @spec transcribe_batch(Model.t(), [audio()], [transcribe_opt()]) ::
+          {:ok, [Transcription.t()]} | {:error, Error.t()}
+  def transcribe_batch(model, audios, opts \\ [])
+
+  def transcribe_batch(%Model{} = _model, [], _opts), do: {:ok, []}
+
+  def transcribe_batch(%Model{} = model, audios, opts)
+      when is_list(audios) and is_list(opts) do
+    with :ok <- validate_options(opts, transcribe_validators()),
+         {:ok, samples_list} <- resolve_audios(audios) do
+      do_transcribe_batch(model, samples_list, opts)
+    end
+  end
+
+  def transcribe_batch(_model, _audios, _opts) do
+    {:error,
+     Error.new(
+       :invalid_request,
+       "expected a %WhisperCt2.Model{}, a list of audios, and a keyword list"
+     )}
+  end
+
+  defp do_transcribe_batch(%Model{ref: ref}, samples_list, opts) do
+    case Native.transcribe_batch(ref, samples_list, build_transcribe_opts(opts)) do
+      {:ok, payloads} ->
+        {:ok, Enum.map(payloads, &build_transcription/1)}
+
+      {:error, payload} ->
+        {:error, Error.from_native(payload)}
+    end
+  end
+
+  defp resolve_audios(audios) do
+    result =
+      Enum.reduce_while(audios, {:ok, []}, fn audio, {:ok, acc} ->
+        case resolve_audio(audio) do
+          {:ok, samples} -> {:cont, {:ok, [samples | acc]}}
+          {:error, _} = err -> {:halt, err}
+        end
+      end)
+
+    case result do
+      {:ok, reversed} -> {:ok, Enum.reverse(reversed)}
+      err -> err
+    end
+  end
+
+  defp resolve_audio({:pcm_f32, samples}) when is_binary(samples) do
+    cond do
+      byte_size(samples) == 0 ->
+        {:error, Error.new(:invalid_request, "PCM binary is empty")}
+
+      rem(byte_size(samples), 4) != 0 ->
+        {:error,
+         Error.new(:invalid_request, "PCM binary length must be a multiple of 4 (f32)", %{
+           byte_size: byte_size(samples)
+         })}
+
+      true ->
+        {:ok, samples}
+    end
+  end
+
+  defp resolve_audio(path) when is_binary(path) do
+    cond do
+      not File.regular?(path) ->
+        {:error,
+         Error.new(
+           :invalid_request,
+           "audio path does not exist or is not a regular file",
+           %{path: path}
+         )}
+
+      String.ends_with?(path, ".wav") ->
+        Wav.read_file(path)
+
+      true ->
+        {:error,
+         Error.new(
+           :invalid_request,
+           "only .wav paths are accepted; resample/decode upstream or pass {:pcm_f32, binary}",
+           %{path: path}
+         )}
+    end
+  end
+
+  defp resolve_audio(_) do
+    {:error, Error.new(:invalid_request, "audio must be a .wav path or {:pcm_f32, binary}")}
+  end
+
+  # The three `build_*` functions pattern-match the NIF map shape
+  # strictly in the function head. That makes the shape a static
+  # contract: the Elixir 1.18 typechecker proves any caller that passes
+  # a map it can't show fits the head will not match, and surfaces it as
+  # a type warning at compile time. Exposed as `@doc false def` so the
+  # contract tests in `nif_contract_test.exs` can pin which atom keys
+  # map to which struct fields without a loaded model; not part of the
+  # public API.
+
+  @doc false
+  @spec build_transcription(map()) :: Transcription.t()
+  def build_transcription(%{
+        language: language,
+        duration_s: duration_s,
+        segments: raw_segments
+      }) do
+    segments = Enum.map(raw_segments, &build_segment/1)
+
+    text =
+      segments
+      |> Enum.map_join(" ", & &1.text)
+      |> String.trim()
+
+    %Transcription{
+      text: text,
+      segments: segments,
+      language: language,
+      duration_s: duration_s
+    }
+  end
+
+  @doc false
+  @spec build_segment(map()) :: Segment.t()
+  def build_segment(%{
+        text: text,
+        start: start,
+        end: end_s,
+        no_speech_prob: no_speech_prob,
+        avg_logprob: avg_logprob,
+        tokens: tokens,
+        words: words
+      }) do
+    %Segment{
+      text: text,
+      start: start,
+      end: end_s,
+      no_speech_prob: no_speech_prob,
+      avg_logprob: avg_logprob,
+      tokens: tokens,
+      words: words && Enum.map(words, &build_word/1)
+    }
+  end
+
+  @doc false
+  @spec build_word(map()) :: Word.t()
+  def build_word(%{text: text, start: start, end: end_s, probability: probability}) do
+    %Word{text: text, start: start, end: end_s, probability: probability}
   end
 
   defp build_transcribe_opts(opts) do
     %{
       language: Keyword.get(opts, :language),
-      timestamp: Keyword.get(opts, :timestamp, false),
+      initial_prompt: Keyword.get(opts, :initial_prompt),
+      prefix: Keyword.get(opts, :prefix),
+      word_timestamps: Keyword.get(opts, :word_timestamps),
       beam_size: Keyword.get(opts, :beam_size),
       patience: Keyword.get(opts, :patience),
       length_penalty: Keyword.get(opts, :length_penalty),
@@ -306,9 +431,6 @@ defmodule WhisperCt2 do
       suppress_blank: Keyword.get(opts, :suppress_blank),
       max_length: Keyword.get(opts, :max_length),
       num_hypotheses: Keyword.get(opts, :num_hypotheses),
-      return_scores: Keyword.get(opts, :return_scores),
-      return_logits_vocab: Keyword.get(opts, :return_logits_vocab),
-      return_no_speech_prob: Keyword.get(opts, :return_no_speech_prob),
       max_initial_timestamp_index: Keyword.get(opts, :max_initial_timestamp_index),
       suppress_tokens: Keyword.get(opts, :suppress_tokens)
     }
@@ -323,20 +445,8 @@ defmodule WhisperCt2 do
     end
   end
 
-  @spec validate_known_options(keyword(), [atom()]) :: :ok | {:error, Error.t()}
-  defp validate_known_options(opts, allowed) do
-    case Keyword.keys(opts) -- allowed do
-      [] ->
-        :ok
-
-      [unknown | _] ->
-        {:error, Error.new(:invalid_request, "unknown option #{inspect(unknown)}")}
-    end
-  end
-
-  @spec validate_load_options(keyword()) :: :ok | {:error, Error.t()}
-  defp validate_load_options(opts) do
-    validators = %{
+  defp load_validators do
+    %{
       device: &(&1 in @devices),
       compute_type: &(&1 in @compute_types),
       device_indices: &non_empty_list_of_non_neg_integers?/1,
@@ -344,60 +454,70 @@ defmodule WhisperCt2 do
       max_queued_batches: &is_integer/1,
       cpu_core_offset: &is_integer/1
     }
-
-    validate_option_values(opts, validators)
   end
 
-  @spec validate_transcribe_options(keyword()) :: :ok | {:error, Error.t()}
-  defp validate_transcribe_options(opts) do
-    validators = %{
-      language: &valid_language?/1,
-      timestamp: &is_boolean/1,
+  defp transcribe_validators do
+    %{
+      language: &valid_optional_string?/1,
+      initial_prompt: &valid_optional_string?/1,
+      prefix: &valid_optional_string?/1,
+      word_timestamps: &is_boolean/1,
       beam_size: &positive_integer?/1,
-      patience: &number?/1,
+      # `patience` is faster-whisper's beam-search patience; values < 1.0
+      # are documented as effectively disabling it.
+      patience: &positive_number?/1,
+      # CTranslate2 accepts any sign for `length_penalty`, including
+      # negative values that bias toward shorter generations.
       length_penalty: &number?/1,
-      repetition_penalty: &number?/1,
+      # `repetition_penalty` < 1.0 amplifies repetition; documented values
+      # are >= 1.0 (1.0 = neutral). Reject < 1.0 at the boundary.
+      repetition_penalty: &repetition_penalty?/1,
       no_repeat_ngram_size: &non_neg_integer?/1,
-      sampling_temperature: &number?/1,
+      # Negative temperatures are nonsensical; 0.0 = greedy.
+      sampling_temperature: &non_neg_number?/1,
       sampling_topk: &positive_integer?/1,
       suppress_blank: &is_boolean/1,
       max_length: &positive_integer?/1,
       num_hypotheses: &positive_integer?/1,
-      return_scores: &is_boolean/1,
-      return_logits_vocab: &is_boolean/1,
-      return_no_speech_prob: &is_boolean/1,
       max_initial_timestamp_index: &non_neg_integer?/1,
       suppress_tokens: &list_of_integers?/1
     }
-
-    validate_option_values(opts, validators)
   end
 
-  @spec validate_option_values(keyword(), map()) :: :ok | {:error, Error.t()}
-  defp validate_option_values(opts, validators) do
-    Enum.reduce_while(opts, :ok, fn {key, value}, :ok ->
-      validator = Map.fetch!(validators, key)
-
-      if validator.(value) do
-        {:cont, :ok}
-      else
-        {:halt,
-         {:error,
-          Error.new(
-            :invalid_request,
-            "invalid value for option #{inspect(key)}: #{inspect(value)}"
-          )}}
-      end
-    end)
+  @spec validate_options(keyword(), map()) :: :ok | {:error, Error.t()}
+  defp validate_options(opts, validators) do
+    Enum.reduce_while(opts, :ok, fn pair, :ok -> check_option(pair, validators) end)
   end
 
-  defp valid_language?(nil), do: true
-  defp valid_language?(value) when is_binary(value), do: String.trim(value) != ""
-  defp valid_language?(_), do: false
+  defp check_option({key, value}, validators) do
+    case Map.fetch(validators, key) do
+      :error ->
+        {:halt, {:error, Error.new(:invalid_request, "unknown option #{inspect(key)}")}}
+
+      {:ok, validator} ->
+        if validator.(value) do
+          {:cont, :ok}
+        else
+          {:halt,
+           {:error,
+            Error.new(
+              :invalid_request,
+              "invalid value for option #{inspect(key)}: #{inspect(value)}"
+            )}}
+        end
+    end
+  end
+
+  defp valid_optional_string?(nil), do: true
+  defp valid_optional_string?(value) when is_binary(value), do: String.trim(value) != ""
+  defp valid_optional_string?(_), do: false
 
   defp positive_integer?(v), do: is_integer(v) and v > 0
   defp non_neg_integer?(v), do: is_integer(v) and v >= 0
   defp number?(v), do: is_integer(v) or is_float(v)
+  defp positive_number?(v), do: number?(v) and v > 0
+  defp non_neg_number?(v), do: number?(v) and v >= 0
+  defp repetition_penalty?(v), do: number?(v) and v >= 1
 
   defp list_of_integers?(v) when is_list(v), do: Enum.all?(v, &is_integer/1)
   defp list_of_integers?(_), do: false

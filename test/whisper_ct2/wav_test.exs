@@ -57,6 +57,40 @@ defmodule WhisperCt2.WavTest do
     assert {:ok, ^data} = Wav.decode(wav)
   end
 
+  test "downmixes 32-bit float stereo by averaging" do
+    data = <<0.5::little-float-32, -0.5::little-float-32, 0.25::little-float-32, 0.75::little-float-32>>
+    wav = wav_header(2, 16_000, 32, 3, byte_size(data)) <> data
+
+    assert {:ok, pcm} = Wav.decode(wav)
+    assert <<a::little-float-32, b::little-float-32>> = pcm
+    assert_in_delta a, 0.0, 1.0e-6
+    assert_in_delta b, 0.5, 1.0e-6
+  end
+
+  test "decodes 32-bit signed int mono" do
+    # Half-scale positive sample: 2^30 = 1_073_741_824 / 2^31 = 0.5.
+    data = <<1_073_741_824::little-signed-32, -1_073_741_824::little-signed-32>>
+    wav = wav_header(1, 16_000, 32, 1, byte_size(data)) <> data
+
+    assert {:ok, pcm} = Wav.decode(wav)
+    assert <<a::little-float-32, b::little-float-32>> = pcm
+    assert_in_delta a, 0.5, 1.0e-6
+    assert_in_delta b, -0.5, 1.0e-6
+  end
+
+  test "downmixes 32-bit signed int stereo by averaging" do
+    data =
+      <<1_073_741_824::little-signed-32, -1_073_741_824::little-signed-32, 1_073_741_824::little-signed-32,
+        1_073_741_824::little-signed-32>>
+
+    wav = wav_header(2, 16_000, 32, 1, byte_size(data)) <> data
+
+    assert {:ok, pcm} = Wav.decode(wav)
+    assert <<a::little-float-32, b::little-float-32>> = pcm
+    assert_in_delta a, 0.0, 1.0e-6
+    assert_in_delta b, 0.5, 1.0e-6
+  end
+
   test "rejects non-16kHz audio" do
     data = <<0::little-signed-16>>
     wav = wav_header(1, 44_100, 16, 1, byte_size(data)) <> data

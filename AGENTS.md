@@ -1,29 +1,55 @@
 # whisper_ct2 Agent Instructions
 
 `whisper_ct2` is a native Elixir Whisper STT library backed by CTranslate2
-via a Rustler NIF over the `ct2rs` crate. There is no Python in the loop.
+via a Rustler NIF over the `ct2rs` crate. No Python is involved.
 
-## Development
+For the user-facing intro, options, audio contract, and error taxonomy,
+read `README.md`. For consumer rules synced via `mix usage_rules.sync`,
+read `usage-rules.md`. This file covers only repo-internal guidance.
 
-- The Rust crate lives in `native/whisper_ct2_native/`. Bundled CTranslate2
-  is compiled from source on first build (CMake + C++17 required).
-- Keep the NIF surface narrow: load model, query info, transcribe one chunk.
-  All chunking, validation, and audio decoding lives in Elixir.
-- The `WhisperCt2.Wav` decoder handles only the formats Whisper accepts
-  directly (16 kHz mono / stereo, 16/32-bit PCM, 32-bit float). For other
-  formats, resample upstream with `ffmpeg -ar 16000 -ac 1`.
+## Workflow
 
-## Quality Gates
+Standard interface is `Taskfile.yml`:
 
-- `mix format --check-formatted --dry-run`
-- `mix test` (unit, fast, no network)
-- `mix test --include integration` (downloads model + WAV, runs real
-  inference; ~75 MB first run)
-- `cargo test --manifest-path native/whisper_ct2_native/Cargo.toml`
-- `mix credo --strict` when Credo is available
+- `task setup` - `mix deps.get`.
+- `task compile` - `mix compile --warnings-as-errors`. First source build
+  of CTranslate2 takes ~10 minutes.
+- `task fmt` / `task fmt:check` - Elixir + Rust formatting.
+- `task lint` - `mix credo --strict` and `cargo clippy -D warnings`.
+- `task test` - fast Elixir unit tests.
+- `task test:integration` - real model, real inference, ~75 MB download.
+- `task test:rust` - Rust unit tests.
+- `task check` - full local gate (fmt, compile, lint, tests, docs).
 
-## Errors
+## Architectural invariants
 
-All public functions return `{:error, %WhisperCt2.Error{}}` on failure.
-Never raise from happy-path code. The NIF protects against Rust panics and
-maps them to `:nif_panic`.
+These are the load-bearing decisions that aren't visible from the public
+API surface and should not be silently undone:
+
+- Drive `ct2rs::sys::Whisper` directly; the NIF owns the mel filterbank,
+  prompt construction, and word alignment. The `ct2rs::Whisper`
+  high-level wrapper does not expose structured per-segment data,
+  `initial_prompt` / `prefix`, or batched multi-audio transcribe.
+- `transcribe_batch/3` stacks all chunks of all audios into one storage
+  view; the encoder runs once across the whole batch.
+- English-only checkpoints (`*.en`) get the `[<|startoftranscript|>]`
+  prompt only; multilingual checkpoints get `[sot, lang, transcribe]`.
+  The branch lives in `transcribe.rs::transcribe_many`; do not collapse
+  it.
+- Whisper timestamp tokens are not in the tokenizer vocab; their base
+  ID is `no_timestamps_id + 1` (matches faster-whisper). See
+  `tokens::SpecialTokens::resolve`.
+
+## Release
+
+Precompiled artefacts are built on tag push by
+`.github/workflows/release.yml` for four targets:
+
+- `aarch64-apple-darwin` (Accelerate)
+- `x86_64-unknown-linux-gnu` (oneDNN + `cuda-dynamic`)
+- `x86_64-unknown-linux-gnu` `mkl` variant (Intel MKL + `cuda-dynamic`)
+- `aarch64-unknown-linux-gnu` (oneDNN + `cuda-dynamic`)
+
+Consumers fetch the artefact matching their triple through
+`rustler_precompiled`. Opt into a source build with `WHISPER_CT2_BUILD=1`
+or pick an MKL artefact on x86_64 Linux with `WHISPER_CT2_VARIANT=mkl`.

@@ -1,7 +1,7 @@
 defmodule WhisperCt2.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "0.2.0"
   @source_url "https://github.com/rubas/whisper_ct2"
 
   @spec project() :: keyword()
@@ -31,7 +31,7 @@ defmodule WhisperCt2.MixProject do
   defp docs do
     [
       main: "readme",
-      extras: ["README.md", "CHANGELOG.md"],
+      extras: ["README.md", "CHANGELOG.md", "usage-rules.md"],
       source_url: @source_url,
       source_ref: "v#{@version}",
       homepage_url: @source_url
@@ -53,7 +53,7 @@ defmodule WhisperCt2.MixProject do
         "ct2rs" => "https://github.com/jkawamoto/ctranslate2-rs"
       },
       files:
-        ~w(lib native/whisper_ct2_native/src native/whisper_ct2_native/Cargo.toml native/whisper_ct2_native/Cargo.lock checksum-*.exs mix.exs README.md CHANGELOG.md LICENSE*)
+        ~w(lib native/whisper_ct2_native/src native/whisper_ct2_native/Cargo.toml native/whisper_ct2_native/Cargo.lock checksum-*.exs mix.exs README.md CHANGELOG.md LICENSE* usage-rules.md)
     ]
   end
 

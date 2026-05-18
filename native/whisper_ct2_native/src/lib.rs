@@ -1,29 +1,33 @@
-//! Rustler NIF wrapping `ct2rs::Whisper` for Whisper speech-to-text via
-//! `CTranslate2`.
-//!
-//! NIF surface (all functions return a 2-tuple of `{:ok, value}` or
-//! `{:error, %{type, message, details}}`):
-//!
-//! - [`nif_available_devices`]    — runtime device discovery.
-//! - [`nif_load_model`]           — load a CT2-converted Whisper directory.
-//! - [`nif_model_info`]           — model metadata snapshot.
-//! - [`nif_transcribe`]           — run inference on a buffer of f32 PCM.
-//!
-//! `samples` is a BEAM binary of little-endian IEEE-754 `f32` PCM samples
-//! (mono, 16 kHz). `ct2rs::Whisper` internally splits audio longer than its
-//! 30 s window, so callers do not need to chunk first.
+//! Rustler NIF wrapping `ct2rs::sys::Whisper`. Every entry point returns
+//! `{:ok, value}` or `{:error, %{type, message, details}}`; PCM input is
+//! little-endian IEEE-754 `f32` mono at 16 kHz, chunked into Whisper
+//! 30 s windows internally.
 
-#![forbid(unsafe_code)]
+// `deny` rather than `forbid`: ndarray's `s!` macro expands to code that
+// uses `#[allow(unsafe_code)]` internally. Our own code stays unsafe-free
+// (cargo will still error on any unsafe block we write).
+#![deny(unsafe_code)]
 
 use std::collections::HashMap;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
-use std::sync::Mutex;
 
-use ct2rs::sys::{get_device_count, ComputeType, Config, Device};
-use ct2rs::{Whisper, WhisperOptions};
+use ct2rs::sys::{ComputeType, Config, Device, Whisper, WhisperOptions, get_device_count};
+use ct2rs::tokenizers::hf;
+use parking_lot::Mutex;
 use rustler::types::binary::Binary;
 use rustler::{Encoder, Env, NifMap, ResourceArc, Term};
+
+mod align;
+mod errors;
+mod preprocessor;
+mod tokens;
+mod transcribe;
+
+use errors::kind_from_chain;
+use preprocessor::Preprocessor;
+use tokens::SpecialTokens;
+use transcribe::{SegmentResult, TranscribeRequest, TranscriptionResult, WordResult};
 
 #[allow(missing_docs)]
 mod atoms {
@@ -34,8 +38,7 @@ mod atoms {
 }
 use atoms::{error, ok};
 
-/// `true` when this build was compiled with any CUDA cargo feature. Used as a
-/// compile-time gate so non-CUDA builds neither link nor call CUDA paths.
+/// `true` when this build was compiled with any CUDA cargo feature.
 const CUDA_SUPPORTED: bool = cfg!(any(feature = "cuda", feature = "cuda-dynamic"));
 
 /// Structured error returned to Elixir as a `NifMap`. The Elixir side maps
@@ -62,13 +65,29 @@ impl NativeError {
     }
 }
 
-/// Opaque BEAM resource holding a loaded Whisper model.
+impl From<anyhow::Error> for NativeError {
+    fn from(err: anyhow::Error) -> Self {
+        // Recover the category attached at the originating call-site via
+        // `errors::invalid_request` / `errors::runtime_error`. Uncategorised
+        // errors fall back to `inference_error` — that path is for real
+        // CTranslate2 failures bubbled up through `anyhow!`.
+        let kind = kind_from_chain(&err).unwrap_or("inference_error");
+        NativeError::new(kind, format!("{err:#}"))
+    }
+}
+
+/// Opaque BEAM resource holding a loaded Whisper model plus everything we
+/// need to feed `ct2rs::sys::Whisper` (mel filterbank, tokenizer, special
+/// token IDs).
 ///
-/// `ct2rs::Whisper` is not documented as `Sync`, so inference calls are
-/// serialised through a [`Mutex`]. The `CTranslate2` engine itself is
-/// thread-safe; load multiple models if you need parallel inference.
+/// `sys::Whisper` is serialised through a [`Mutex`] for inference. The
+/// CTranslate2 engine itself is thread-safe; load multiple models if you
+/// need parallel inference.
 struct WhisperResource {
     whisper: Mutex<Whisper>,
+    tokenizer: hf::Tokenizer,
+    preprocessor: Preprocessor,
+    specials: SpecialTokens,
     sampling_rate: usize,
     n_samples: usize,
     multilingual: bool,
@@ -91,7 +110,9 @@ struct LoadOpts {
 #[derive(NifMap)]
 struct TranscribeOpts {
     language: Option<String>,
-    timestamp: bool,
+    initial_prompt: Option<String>,
+    prefix: Option<String>,
+    word_timestamps: Option<bool>,
     beam_size: Option<u32>,
     patience: Option<f32>,
     length_penalty: Option<f32>,
@@ -102,9 +123,6 @@ struct TranscribeOpts {
     suppress_blank: Option<bool>,
     max_length: Option<u32>,
     num_hypotheses: Option<u32>,
-    return_scores: Option<bool>,
-    return_logits_vocab: Option<bool>,
-    return_no_speech_prob: Option<bool>,
     max_initial_timestamp_index: Option<u32>,
     suppress_tokens: Option<Vec<i32>>,
 }
@@ -123,6 +141,69 @@ struct AvailableDevices {
     cpu: i32,
     cuda: i32,
     cuda_supported: bool,
+}
+
+#[derive(NifMap)]
+struct NifWord {
+    text: String,
+    start: f32,
+    end: f32,
+    probability: f32,
+}
+
+#[derive(NifMap)]
+struct NifSegment {
+    text: String,
+    start: f32,
+    end: f32,
+    no_speech_prob: f32,
+    avg_logprob: f32,
+    tokens: Vec<u32>,
+    words: Option<Vec<NifWord>>,
+}
+
+#[derive(NifMap)]
+struct NifTranscription {
+    language: String,
+    duration_s: f32,
+    segments: Vec<NifSegment>,
+}
+
+impl From<WordResult> for NifWord {
+    fn from(w: WordResult) -> Self {
+        Self {
+            text: w.text,
+            start: w.start,
+            end: w.end,
+            probability: w.probability,
+        }
+    }
+}
+
+impl From<SegmentResult> for NifSegment {
+    fn from(s: SegmentResult) -> Self {
+        Self {
+            text: s.text,
+            start: s.start,
+            end: s.end,
+            no_speech_prob: s.no_speech_prob,
+            avg_logprob: s.avg_logprob,
+            tokens: s.tokens,
+            words: s
+                .words
+                .map(|ws| ws.into_iter().map(NifWord::from).collect()),
+        }
+    }
+}
+
+impl From<TranscriptionResult> for NifTranscription {
+    fn from(t: TranscriptionResult) -> Self {
+        Self {
+            language: t.language,
+            duration_s: t.duration_s,
+            segments: t.segments.into_iter().map(NifSegment::from).collect(),
+        }
+    }
 }
 
 fn run_with_panic_protection<T, F>(f: F) -> Result<T, NativeError>
@@ -288,10 +369,12 @@ fn nif_load_model(env: Env<'_>, path: String, opts: LoadOpts) -> Term<'_> {
             device,
             compute_type,
             device_indices,
-            num_threads_per_replica: opts.num_threads_per_replica.unwrap_or(0) as usize,
             ..Config::default()
         };
 
+        if let Some(v) = opts.num_threads_per_replica {
+            config.num_threads_per_replica = v as usize;
+        }
         if let Some(v) = opts.max_queued_batches {
             config.max_queued_batches = v;
         }
@@ -307,12 +390,33 @@ fn nif_load_model(env: Env<'_>, path: String, opts: LoadOpts) -> Term<'_> {
                 .with_detail("compute_type", compute_type_label(compute_type))
         })?;
 
-        let sampling_rate = whisper.sampling_rate();
-        let n_samples = whisper.n_samples();
+        let tokenizer = hf::Tokenizer::new(&path_buf).map_err(|reason| {
+            NativeError::new("load_error", "failed to load tokenizer.json")
+                .with_detail("reason", reason.to_string())
+                .with_detail("path", path.clone())
+        })?;
+        let specials = SpecialTokens::resolve(&tokenizer).map_err(|reason| {
+            NativeError::new(
+                "load_error",
+                "tokenizer is missing required Whisper special tokens",
+            )
+            .with_detail("reason", reason.to_string())
+        })?;
+        let preprocessor = Preprocessor::load(&path_buf).map_err(|reason| {
+            NativeError::new("load_error", "failed to load preprocessor_config.json")
+                .with_detail("reason", reason.to_string())
+                .with_detail("path", path.clone())
+        })?;
+
+        let sampling_rate = preprocessor.sampling_rate;
+        let n_samples = preprocessor.n_samples;
         let multilingual = whisper.is_multilingual();
 
         Ok(ResourceArc::new(WhisperResource {
             whisper: Mutex::new(whisper),
+            tokenizer,
+            preprocessor,
+            specials,
             sampling_rate,
             n_samples,
             multilingual,
@@ -357,7 +461,20 @@ fn decode_pcm_f32(bytes: &[u8]) -> Result<Vec<f32>, NativeError> {
     Ok(samples)
 }
 
-fn build_whisper_options(opts: &TranscribeOpts) -> WhisperOptions {
+// Verified 2026-05: every field exposed in `TranscribeOpts` whose ct2rs
+// default we inherit (`beam_size=5`, `patience=1.0`, `length_penalty=1.0`,
+// `repetition_penalty=1.0`, `no_repeat_ngram_size=0`, `max_length=448`,
+// `sampling_topk=1` (greedy), `sampling_temperature=1.0`,
+// `num_hypotheses=1`, `max_initial_timestamp_index=50` (= 1.0 s),
+// `suppress_blank=true`, `suppress_tokens=[-1]`) matches the
+// `faster_whisper.TranscriptionOptions` default for the same field. The
+// one apparent mismatch — faster-whisper's `temperature=[0.0, 0.2, ...]`
+// fallback list vs ct2rs's `1.0` — is a no-op at `sampling_topk=1`
+// because beam/greedy decoding ignores temperature.
+//
+// If you bump the ct2rs version, re-run the comparison before assuming
+// the inheritance still holds.
+fn build_request(opts: &TranscribeOpts) -> TranscribeRequest {
     let mut whisper_opts = WhisperOptions::default();
     if let Some(v) = opts.beam_size {
         whisper_opts.beam_size = v as usize;
@@ -389,26 +506,25 @@ fn build_whisper_options(opts: &TranscribeOpts) -> WhisperOptions {
     if let Some(v) = opts.num_hypotheses {
         whisper_opts.num_hypotheses = v as usize;
     }
-    if let Some(v) = opts.return_scores {
-        whisper_opts.return_scores = v;
-    }
-    if let Some(v) = opts.return_logits_vocab {
-        whisper_opts.return_logits_vocab = v;
-    }
-    if let Some(v) = opts.return_no_speech_prob {
-        whisper_opts.return_no_speech_prob = v;
-    }
     if let Some(v) = opts.max_initial_timestamp_index {
         whisper_opts.max_initial_timestamp_index = v as usize;
     }
     if let Some(ref tokens) = opts.suppress_tokens {
         whisper_opts.suppress_tokens.clone_from(tokens);
     }
-    whisper_opts
+
+    TranscribeRequest {
+        language: opts.language.clone(),
+        with_timestamps: true,
+        initial_prompt: opts.initial_prompt.clone(),
+        prefix: opts.prefix.clone(),
+        word_timestamps: opts.word_timestamps.unwrap_or(false),
+        options: whisper_opts,
+    }
 }
 
-/// Runs Whisper inference. `samples_bin` may be longer than the 30 s Whisper
-/// window — `ct2rs::Whisper::generate` splits it internally.
+/// Transcribes a single PCM buffer. The buffer may be longer than the 30 s
+/// Whisper window; chunks are batched internally.
 #[rustler::nif(schedule = "DirtyCpu")]
 #[allow(clippy::needless_pass_by_value)] // Rustler decodes nif args by value.
 fn nif_transcribe<'a>(
@@ -420,20 +536,61 @@ fn nif_transcribe<'a>(
     let bytes = samples_bin.as_slice();
     let result = run_with_panic_protection(|| {
         let samples = decode_pcm_f32(bytes)?;
-        let whisper_opts = build_whisper_options(&opts);
-        let language = opts.language.as_deref();
+        let request = build_request(&opts);
 
-        let whisper = model
-            .whisper
-            .lock()
-            .map_err(|_| NativeError::new("runtime_error", "model mutex poisoned"))?;
+        // `parking_lot::Mutex` cannot be poisoned, so a panic under the
+        // lock does not brick the loaded model for the rest of its life.
+        let whisper = model.whisper.lock();
 
-        whisper
-            .generate(&samples, language, opts.timestamp, &whisper_opts)
-            .map_err(|reason| {
-                NativeError::new("inference_error", "Whisper inference failed")
-                    .with_detail("reason", reason.to_string())
-            })
+        let transcription = transcribe::transcribe_one(
+            &whisper,
+            &model.tokenizer,
+            &model.preprocessor,
+            &model.specials,
+            &samples,
+            &request,
+        )?;
+        Ok(NifTranscription::from(transcription))
+    });
+
+    encode_result(env, result)
+}
+
+/// Transcribes a list of PCM buffers in one batched `generate` call. The
+/// caller passes a `Vec<Binary>`; each buffer is decoded, chunked, and
+/// stacked so the encoder runs once across every chunk in the batch.
+#[rustler::nif(schedule = "DirtyCpu")]
+#[allow(clippy::needless_pass_by_value)] // Rustler decodes nif args by value.
+fn nif_transcribe_batch<'a>(
+    env: Env<'a>,
+    model: ResourceArc<WhisperResource>,
+    samples_bins: Vec<Binary>,
+    opts: TranscribeOpts,
+) -> Term<'a> {
+    let bytes_per_audio: Vec<&[u8]> = samples_bins.iter().map(Binary::as_slice).collect();
+    let result = run_with_panic_protection(|| {
+        let decoded: Vec<Vec<f32>> = bytes_per_audio
+            .iter()
+            .map(|b| decode_pcm_f32(b))
+            .collect::<Result<_, _>>()?;
+        let request = build_request(&opts);
+
+        let audios: Vec<&[f32]> = decoded.iter().map(Vec::as_slice).collect();
+
+        let whisper = model.whisper.lock();
+
+        let transcriptions = transcribe::transcribe_many(
+            &whisper,
+            &model.tokenizer,
+            &model.preprocessor,
+            &model.specials,
+            &audios,
+            &request,
+        )?;
+        Ok(transcriptions
+            .into_iter()
+            .map(NifTranscription::from)
+            .collect::<Vec<_>>())
     });
 
     encode_result(env, result)

@@ -1,0 +1,122 @@
+name: "Setup whisper_ct2 build env"
+description: "System packages, Task, Elixir/OTP, Rust toolchain, sccache, and the mix/cargo/native caches."
+
+inputs:
+  elixir-version:
+    description: "Elixir version (e.g. 1.20.0-rc.5)"
+    required: true
+  otp-version:
+    description: "OTP version (e.g. 29.0)"
+    required: true
+  rust-toolchain:
+    description: "Rust toolchain version (e.g. 1.95.0)"
+    required: true
+  rust-components:
+    description: >-
+      Comma-separated rustup components to install (e.g. "rustfmt, clippy").
+      Empty by default; release/integration jobs don't need linters.
+    required: false
+    default: ""
+  cache-fixtures:
+    description: >-
+      Set to "true" to cache the integration-test fixtures
+      (`test/fixtures/`). Default "false".
+    required: false
+    default: "false"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install system packages
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq cmake build-essential
+
+    - name: Install Task
+      uses: go-task/setup-task@3be4020d41929789a01026e0e427a4321ce0ad44 # v2
+
+    - name: Setup Elixir/OTP
+      uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1
+      with:
+        elixir-version: ${{ inputs.elixir-version }}
+        otp-version: ${{ inputs.otp-version }}
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+      with:
+        toolchain: ${{ inputs.rust-toolchain }}
+        components: ${{ inputs.rust-components }}
+
+    - name: Install sccache
+      # Hashes preprocessor output + compiler flags and serves cached .o
+      # files when both match. The ~10-min CTranslate2 CMake build hits
+      # 90%+ on no-op Cargo.lock churn since CTranslate2 source rarely
+      # moves. Storage is GitHub's per-repo Actions cache (10 GB cap, LRU).
+      uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+
+    - name: Enable sccache wrapping
+      shell: bash
+      run: |
+        echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+        echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+        # CTranslate2's CMake build picks CC/CXX up from env; wrapping them
+        # is what catches the C++ compile, which is the slow part.
+        echo "CC=sccache cc" >> "$GITHUB_ENV"
+        echo "CXX=sccache c++" >> "$GITHUB_ENV"
+
+    - name: Cache Elixir build + deps
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      with:
+        path: |
+          _build
+          deps
+        key: ${{ runner.os }}-mix-${{ inputs.elixir-version }}-${{ inputs.otp-version }}-${{ hashFiles('**/mix.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-mix-${{ inputs.elixir-version }}-${{ inputs.otp-version }}-
+
+    - name: Cache Cargo registry + git
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ runner.os }}-cargo-${{ inputs.rust-toolchain }}-${{ hashFiles('native/whisper_ct2_native/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-${{ inputs.rust-toolchain }}-
+
+    - name: Cache native build artifacts (Cargo target + CMake)
+      # The CTranslate2 CMake build inside the Cargo target dir is the
+      # ~10-minute cost on a cold run. Keyed on Cargo.lock so the cache only
+      # invalidates when the dependency graph actually changes.
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      with:
+        path: |
+          native/whisper_ct2_native/target
+        key: ${{ runner.os }}-native-${{ inputs.rust-toolchain }}-${{ hashFiles('native/whisper_ct2_native/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-native-${{ inputs.rust-toolchain }}-
+
+    - name: Cache integration fixtures (model + audio)
+      if: ${{ inputs.cache-fixtures == 'true' }}
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      with:
+        # Scoped to the downloaded artefacts only. The checked-in golden
+        # fixtures (`test/fixtures/mel_golden/`, `test/fixtures/words_golden/`)
+        # must come from the working tree on every run; caching the whole
+        # `test/fixtures/` directory would overlay stale golden bytes from a
+        # previous cache save and silently validate against outdated data.
+        path: |
+          test/fixtures/faster-whisper-tiny.en
+          test/fixtures/faster-whisper-tiny
+          test/fixtures/jfk.wav
+        key: ${{ runner.os }}-fixtures-${{ hashFiles('test/support/**/*.ex') }}
+        restore-keys: |
+          ${{ runner.os }}-fixtures-
+
+    - name: Install Hex/Rebar + fetch deps
+      shell: bash
+      run: |
+        mix local.hex --force
+        mix local.rebar --force
+        mix deps.get

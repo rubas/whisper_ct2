@@ -10,6 +10,18 @@ tasks:
     cmds:
       - mix deps.get
 
+  upgrade:
+    desc: Bump Elixir + Rust deps to latest compatible (within mix.exs / Cargo.toml constraints)
+    cmds:
+      - mix deps.update --all
+      - cargo update --manifest-path {{.CARGO_MANIFEST}}
+
+  outdated:
+    desc: Report deps that have newer releases available on Hex / crates.io
+    cmds:
+      - mix hex.outdated
+      - 'cargo outdated --manifest-path {{.CARGO_MANIFEST}} --root-deps-only || echo "(install cargo-outdated: cargo install cargo-outdated)"'
+
   compile:
     desc: Compile project (builds NIF; first run takes ~10 min)
     cmds:
@@ -37,6 +49,13 @@ tasks:
     cmds:
       - mix format
       - cargo fmt --manifest-path {{.CARGO_MANIFEST}}
+
+  fix:
+    desc: Auto-fix formatting and clippy lints in place
+    cmds:
+      - mix format
+      - cargo fmt --manifest-path {{.CARGO_MANIFEST}}
+      - cargo clippy --manifest-path {{.CARGO_MANIFEST}} --all-targets --fix --allow-dirty --allow-staged -- -D warnings
 
   fmt:check:
     desc: Verify Elixir and Rust formatting (no writes)
@@ -68,4 +87,3 @@ tasks:
       - task: lint
       - task: test
       - task: test:rust
-      - task: docs

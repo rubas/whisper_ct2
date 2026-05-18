@@ -1,0 +1,9 @@
+{
+  "model": "Systran/faster-whisper-tiny.en",
+  "faster_whisper_version": "1.2.1",
+  "audio_sha256": "59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860e",
+  "language": "en",
+  "duration": 11.0,
+  "word_count": 22,
+  "beam_size": 5
+}
