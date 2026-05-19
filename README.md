@@ -126,6 +126,20 @@ WHISPER_CT2_BUILD=1 WHISPER_CT2_FEATURES="dnnl cuda-dynamic" mix compile
 HIP CMake arm refuses to build with WITH_CUDA=ON). Source builds with
 `hip` need the ROCm SDK at `ROCM_PATH` (default `/opt/rocm`).
 
+#### Source-build dependencies for `hip`
+
+On apt-based distros, `rocm-dev` pulls everything in. On NixOS or other
+split-package distros, install:
+
+```
+clr  hipblas  hipblas-common  rocblas  hiprand  rocrand  rocprim
+rocthrust  hipcub  rocm-device-libs  rocm-comgr  rocm-core  rocm-runtime
+llvm.clang  llvm.lld
+```
+
+`find_package(hiprand)` inside CTranslate2's CMake transitively pulls in
+the rest via the `AMDDeviceLibs` / `amd_comgr` cmake configs.
+
 ### Runtime device selection
 
 ```elixir
