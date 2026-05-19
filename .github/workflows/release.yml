@@ -222,6 +222,11 @@ jobs:
           sudo apt-get update
           # Install only the components CTranslate2's HIP build needs:
           # - hipcc                HIP compiler driver (wraps clang++)
+          # - hip-dev              ships /opt/rocm/include/hip/* headers
+          #                        (transitively pulled by hip-runtime-amd
+          #                        on apt-installed ROCm 7.x, but listed
+          #                        explicitly so a packaging change is
+          #                        loud not silent)
           # - rocm-device-libs     GPU bitcode the HIP compiler links against
           # - rocm-llvm            ships /opt/rocm/lib/llvm/bin/clang++
           # - hipblas-dev,         linkable libs + headers
@@ -232,15 +237,16 @@ jobs:
           # Skip rocm-hip-sdk meta-package — it pulls rocminfo and other
           # runtime tooling we don't need at build time.
           sudo apt-get install -y --no-install-recommends \
-            hipcc rocm-device-libs rocm-llvm \
+            hipcc hip-dev rocm-device-libs rocm-llvm \
             hipblas-dev hiprand-dev hipcub-dev rocprim-dev rocthrust-dev
           echo "PATH=/opt/rocm/bin:$PATH" >> "$GITHUB_ENV"
           echo "ROCM_PATH=/opt/rocm" >> "$GITHUB_ENV"
           # Default GFX targets. Mirrors AMD's "common" deploy set:
           # gfx906 (Vega20/MI50), gfx908 (MI100), gfx90a (MI200/MI210/MI250),
-          # gfx942 (MI300), gfx1030 (RDNA2 / RX 6000), gfx1100 (RDNA3 / RX 7900),
-          # gfx1200/gfx1201 (RDNA4 / RX 9000, ROCm 7+).
-          echo "CMAKE_HIP_ARCHITECTURES=gfx906;gfx908;gfx90a;gfx942;gfx1030;gfx1100;gfx1200;gfx1201" \
+          # gfx942 (MI300), gfx1030 (RDNA2 / RX 6000), gfx1100 (RDNA3 / RX 7900).
+          # gfx1200/gfx1201 (RDNA4) intentionally omitted until we
+          # confirm ROCm 7.2.3 device libs ship the corresponding bitcode.
+          echo "CMAKE_HIP_ARCHITECTURES=gfx906;gfx908;gfx90a;gfx942;gfx1030;gfx1100" \
             >> "$GITHUB_ENV"
           # Verify hipcc and clang++ are where the ct2rs build script
           # expects them so a packaging change is loud, not silent.

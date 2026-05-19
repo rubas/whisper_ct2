@@ -109,9 +109,10 @@ build — CTranslate2 reuses `Device::CUDA` internally for HIP. The
 Elixir `available_devices/0` reports `:hip_supported: true` so callers
 can distinguish backends.
 
-Compiled GFX targets: gfx906, gfx908, gfx90a, gfx942, gfx1030, gfx1100,
-gfx1200, gfx1201. For source builds you can override with
-`CMAKE_HIP_ARCHITECTURES="gfx1100"` (semicolon-separated).
+Compiled GFX targets: gfx906, gfx908, gfx90a, gfx942, gfx1030, gfx1100.
+For source builds (incl. RDNA4 gfx1200/gfx1201 when your device libs
+support them), override with `CMAKE_HIP_ARCHITECTURES="gfx1100;gfx1200"`
+(semicolon-separated).
 
 ### Build from source with a custom backend
 

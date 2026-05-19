@@ -287,7 +287,7 @@ dependencies = [
 [[package]]
 name = "ct2rs"
 version = "0.9.18"
-source = "git+https://github.com/rubas/ctranslate2-rs?rev=4c1064d33bc5ecd6d36f20c30e36294308d41eca#4c1064d33bc5ecd6d36f20c30e36294308d41eca"
+source = "git+https://github.com/rubas/ctranslate2-rs?rev=db2820ca91cd14daa46700ac49b42540df1f98fc#db2820ca91cd14daa46700ac49b42540df1f98fc"
 dependencies = [
  "anyhow",
  "cmake",
