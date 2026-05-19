@@ -14,10 +14,16 @@
 
 ### Internal
 
-- Vendored ct2rs patch updated (rev `26a2553`) to force
-  `CMAKE_HIP_COMPILER` and skip the `amdgpu-arch` autodetect that
-  required a real AMD GPU at configure time. Lets the ROCm artefact
-  build reproducibly on GPU-less CI runners.
+- Vendored ct2rs patch updated (rev `4c1064d`) for ROCm 7. Two fixes:
+  - Force `CMAKE_HIP_COMPILER` + `CMAKE_HIP_COMPILER_FORCED` to skip the
+    `amdgpu-arch` autodetect that required a real AMD GPU at configure
+    time.
+  - Pin `CMAKE_C_COMPILER`/`CMAKE_CXX_COMPILER` to `hipcc` and set
+    `GPU_TARGETS` / `AMDGPU_TARGETS` alongside `CMAKE_HIP_ARCHITECTURES`.
+    CTranslate2's HIP CMake propagates `--offload-arch=gfxNNNN` through
+    `INTERFACE_COMPILE_OPTIONS` on every imported HIP target, so the
+    flag lands on plain `.cc` compiles too — `g++` rejects it, `hipcc`
+    handles it.
 - Release workflow's ROCm SDK install bumped from 6.2.4 to 7.2.3 and now
   pulls `rocm-llvm` alongside `rocm-device-libs` so the explicit
   `clang++` path resolves.
