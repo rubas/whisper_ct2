@@ -4,13 +4,13 @@
 
 ### Added
 
-- AMD ROCm/HIP GPU backend. Opt in at install time with
-  `WHISPER_CT2_VARIANT=rocm` for the `x86_64-unknown-linux-gnu--rocm`
-  precompiled artefact, or build from source with
-  `WHISPER_CT2_BUILD=1 WHISPER_CT2_FEATURES="hip dnnl" mix compile`.
-  Requires ROCm 6.2+ at runtime (`libamdhip64`, `libhipblas`); the
-  artefact bundles a private `libctranslate2.so` next to the NIF and
-  uses an `$ORIGIN` rpath, so no `LD_LIBRARY_PATH` setup is needed.
+- AMD ROCm/HIP GPU backend (source-build only in 0.4.0). Build from
+  source with
+  `WHISPER_CT2_BUILD=1 WHISPER_CT2_FEATURES="hip dnnl" mix compile` on a
+  host with ROCm 6.2+ installed. The prebuilt `--rocm` artefact is
+  deferred to a follow-up release; shipping it via apt-installed SDK on
+  a GH-hosted runner is blocked on CTranslate2's CMake HIP detection
+  needing a real AMD GPU at configure time.
 - `available_devices/0` now returns a `:hip_supported` boolean alongside
   `:cuda_supported`. On HIP builds the `:cuda` count reflects the
   visible AMD GPU count (CTranslate2 reuses `Device::CUDA` internally

@@ -119,19 +119,24 @@ jobs:
             features: mkl cuda-dynamic
             install_cuda: true
 
-          # x86_64 Linux: AMD ROCm/HIP variant. Mutually exclusive with the
-          # CUDA backend (CTranslate2's HIP CMake arm fatal-errors on
-          # WITH_CUDA=ON). ROCm has no equivalent to `cuda-dynamic`, so
-          # the resulting binary only runs on hosts with the ROCm runtime
-          # installed (libamdhip64, libhipblas).
-          - id: x86_64-unknown-linux-gnu--rocm
-            suffix: "--rocm"
-            target: x86_64-unknown-linux-gnu
-            runner: ubuntu-24.04
-            lib_ext: so
-            features: hip dnnl
-            install_cuda: false
-            install_rocm: true
+          # NOTE: x86_64-unknown-linux-gnu--rocm (AMD ROCm/HIP) is intentionally
+          # NOT in the release matrix for v0.4.0. The `hip` cargo feature is
+          # plumbed through (see native/whisper_ct2_native/Cargo.toml + the
+          # vendored ct2rs patch), so source builds with
+          # `WHISPER_CT2_BUILD=1 WHISPER_CT2_FEATURES="hip dnnl"` work on hosts
+          # with ROCm 6.2+ installed. Shipping a prebuilt ROCm artefact via
+          # apt-installed SDK on a GH-hosted runner is blocked on CTranslate2's
+          # CMake HIP detection requiring a real AMD GPU at configure time
+          # (`amdgpu-arch failed with error Failed to get device count` → cmake
+          # falls back to passing `-x hip` to plain g++). The follow-up is
+          # tracked in a separate issue and will land in a future release once
+          # we switch the ROCm build to AMD's official rocm/dev-ubuntu-* Docker
+          # image (or move it to a self-hosted GPU runner).
+          #
+          # Keep the Install ROCm SDK / Bundle libctranslate2 steps below; they
+          # are gated on matrix.install_rocm and harmless when the entry is
+          # absent. Restoring the entry should be a 12-line revert of this
+          # comment.
 
           # aarch64 Linux: Graviton/Grace, oneDNN, optional CUDA via dynamic loading
           - id: aarch64-unknown-linux-gnu
