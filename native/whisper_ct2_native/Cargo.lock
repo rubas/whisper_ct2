@@ -287,8 +287,7 @@ dependencies = [
 [[package]]
 name = "ct2rs"
 version = "0.9.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b5693eb65909bc89023b2844268ff8f95b29d99fd64a2b7eb5d2aa1e3aba11f"
+source = "git+https://github.com/rubas/ctranslate2-rs?rev=3f5cfdddb97c3405c471839acb8c812fdd85b8eb#3f5cfdddb97c3405c471839acb8c812fdd85b8eb"
 dependencies = [
  "anyhow",
  "cmake",
@@ -2045,7 +2044,7 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
 name = "whisper_ct2_native"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "ct2rs",
