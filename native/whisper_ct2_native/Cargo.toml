@@ -1,6 +1,6 @@
 [package]
 name = "whisper_ct2_native"
-version = "0.2.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.85"
 
@@ -50,10 +50,22 @@ parking_lot = "0.12"
 default = []
 cuda = ["ct2rs/cuda"]
 cuda-dynamic = ["ct2rs/cuda-dynamic-loading"]
+# AMD ROCm/HIP GPU backend. Mutually exclusive with `cuda`/`cuda-dynamic`.
+# Requires the ROCm SDK at build time (default /opt/rocm; override with
+# `ROCM_PATH`) and libamdhip64 / libhipblas at runtime — there is no
+# `hip-dynamic` equivalent to `cuda-dynamic` upstream, so this artefact
+# only runs on ROCm-equipped hosts.
+hip = ["ct2rs/hip"]
 mkl = ["ct2rs/mkl"]
 dnnl = ["ct2rs/dnnl"]
 openblas = ["ct2rs/openblas"]
 accelerate = ["ct2rs/accelerate"]
+
+# Point at our HIP-enabled ct2rs fork until the patch lands upstream.
+# Pinned to a commit SHA so reproducibility holds across rebuilds.
+# Track: https://github.com/jkawamoto/ctranslate2-rs/pull/139
+[patch.crates-io]
+ct2rs = { git = "https://github.com/rubas/ctranslate2-rs", rev = "3f5cfdddb97c3405c471839acb8c812fdd85b8eb" }
 
 [lints.rust]
 # `deny` rather than `forbid`: ndarray's `s!` macro emits internal

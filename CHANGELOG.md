@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.4.0
+
+### Added
+
+- AMD ROCm/HIP GPU backend. Opt in at install time with
+  `WHISPER_CT2_VARIANT=rocm` for the `x86_64-unknown-linux-gnu--rocm`
+  precompiled artefact, or build from source with
+  `WHISPER_CT2_BUILD=1 WHISPER_CT2_FEATURES="hip dnnl" mix compile`.
+  Requires ROCm 6.2+ at runtime (`libamdhip64`, `libhipblas`); the
+  artefact bundles a private `libctranslate2.so` next to the NIF and
+  uses an `$ORIGIN` rpath, so no `LD_LIBRARY_PATH` setup is needed.
+- `available_devices/0` now returns a `:hip_supported` boolean alongside
+  `:cuda_supported`. On HIP builds the `:cuda` count reflects the
+  visible AMD GPU count (CTranslate2 reuses `Device::CUDA` internally
+  for HIP).
+- `:device, :cuda` works transparently on both CUDA and HIP builds —
+  CTranslate2's C++ ABI uses the same `Device::CUDA` value for AMD
+  GPUs in a HIP build.
+
+### Internal
+
+- Vendored patch to `ct2rs` adding the `hip` cargo feature that plumbs
+  `WITH_HIP=ON` through CMake, finds `ROCM_PATH`, honours
+  `CMAKE_HIP_ARCHITECTURES`, and links the shared `libctranslate2.so`
+  produced by CTranslate2's HIP build branch. Pinned via
+  `[patch.crates-io]` until the change lands upstream.
+
 ## 0.3.1
 
 ### Fixed

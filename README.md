@@ -65,12 +65,13 @@ uvx hf download openai/whisper-tiny.en preprocessor_config.json \
 The published Hex package ships four precompiled artefacts; install picks the
 right one automatically based on your target triple:
 
-| Target triple                      | CPU backend | CUDA           | Notes                                                |
-| ---------------------------------- | ----------- | -------------- | ---------------------------------------------------- |
-| `aarch64-apple-darwin`             | Accelerate  | none           | Apple Silicon (M1+). Uses Accelerate / AMX paths.    |
-| `x86_64-unknown-linux-gnu`         | oneDNN      | `cuda-dynamic` | Default x86_64 binary; runs well on Intel and AMD.   |
-| `x86_64-unknown-linux-gnu` (`mkl`) | Intel MKL   | `cuda-dynamic` | Intel-tuned variant. Opt in via env var (below).     |
-| `aarch64-unknown-linux-gnu`        | oneDNN      | `cuda-dynamic` | Graviton/Grace, optional CUDA on GH200-class hosts.  |
+| Target triple                       | CPU backend | GPU            | Notes                                                |
+| ----------------------------------- | ----------- | -------------- | ---------------------------------------------------- |
+| `aarch64-apple-darwin`              | Accelerate  | none           | Apple Silicon (M1+). Uses Accelerate / AMX paths.    |
+| `x86_64-unknown-linux-gnu`          | oneDNN      | `cuda-dynamic` | Default x86_64 binary; runs well on Intel and AMD.   |
+| `x86_64-unknown-linux-gnu` (`mkl`)  | Intel MKL   | `cuda-dynamic` | Intel-tuned variant. Opt in via env var (below).     |
+| `x86_64-unknown-linux-gnu` (`rocm`) | oneDNN      | ROCm/HIP       | AMD GPU build. **Requires ROCm runtime on the host.** Opt in via env var. |
+| `aarch64-unknown-linux-gnu`         | oneDNN      | `cuda-dynamic` | Graviton/Grace, optional CUDA on GH200-class hosts.  |
 
 `cuda-dynamic` defers loading `libcudart` until first GPU use, so each artefact
 still runs on hosts without CUDA installed. `:device` selection picks CUDA when
@@ -89,14 +90,38 @@ WHISPER_CT2_VARIANT=mkl mix deps.compile whisper_ct2
 `rustler_precompiled` reads this env var at install time and selects the `--mkl`
 artefact instead of the default.
 
+### Selecting the ROCm variant (AMD GPUs)
+
+For hosts with AMD GPUs and the ROCm runtime installed:
+
+```bash
+WHISPER_CT2_VARIANT=rocm mix deps.compile whisper_ct2
+```
+
+The ROCm artefact ships with a bundled `libctranslate2.so` alongside the NIF
+and uses an `$ORIGIN` rpath, so no `LD_LIBRARY_PATH` setup is required. The
+host must have ROCm 6.2+ installed (provides `libamdhip64.so`,
+`libhipblas.so`) — unlike the CUDA path, there is no dynamic-loading
+fallback to CPU, so this artefact will fail to load on hosts without ROCm.
+Use `:device, :cuda` is rejected on this build; pick `:auto` (resolves to
+CUDA on this build's terms — see `available_devices/0`).
+
+Default compiled GFX targets: gfx906, gfx908, gfx90a, gfx942, gfx1030,
+gfx1100. For source builds you can override with
+`CMAKE_HIP_ARCHITECTURES="gfx1100"` (semicolon-separated).
+
 ### Build from source with a custom backend
 
 For source builds you can pick any combination of `ct2rs` features:
 
 ```bash
 WHISPER_CT2_BUILD=1 WHISPER_CT2_FEATURES="dnnl cuda-dynamic" mix compile
-# other options: mkl, openblas, accelerate, cuda, cuda-dynamic
+# other options: mkl, openblas, accelerate, cuda, cuda-dynamic, hip
 ```
+
+`hip` is mutually exclusive with `cuda` / `cuda-dynamic` (CTranslate2's
+HIP CMake arm refuses to build with WITH_CUDA=ON). Source builds with
+`hip` need the ROCm SDK at `ROCM_PATH` (default `/opt/rocm`).
 
 ### Runtime device selection
 

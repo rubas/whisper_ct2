@@ -91,13 +91,24 @@ defmodule WhisperCt2 do
   @doc """
   Reports CTranslate2 device support for this build.
 
-  Returns `{:ok, %{cpu: n, cuda: n, cuda_supported: bool}}` on success.
-  `cuda_supported` reflects compile-time CUDA features (build with
-  `WHISPER_CT2_FEATURES=cuda-dynamic mix compile` to enable). `cuda` is the
-  count of CUDA devices visible at runtime, or `0` when CUDA is not built in.
+  Returns `{:ok, %{cpu: n, cuda: n, cuda_supported: bool, hip_supported: bool}}`
+  on success. `cuda_supported` reflects compile-time CUDA features (build
+  with `WHISPER_CT2_FEATURES=cuda-dynamic mix compile` to enable);
+  `hip_supported` reflects compile-time HIP/ROCm features
+  (`WHISPER_CT2_VARIANT=rocm` or `WHISPER_CT2_FEATURES="hip dnnl"`). At
+  most one of the two is `true`; they are mutually exclusive at build
+  time. `cuda` is the count of GPU devices visible at runtime (NVIDIA on
+  CUDA builds, AMD on HIP builds — CTranslate2 reuses `Device::CUDA`
+  internally for both), or `0` when no GPU backend is built in.
   """
   @spec available_devices() ::
-          {:ok, %{cpu: non_neg_integer(), cuda: non_neg_integer(), cuda_supported: boolean()}}
+          {:ok,
+           %{
+             cpu: non_neg_integer(),
+             cuda: non_neg_integer(),
+             cuda_supported: boolean(),
+             hip_supported: boolean()
+           }}
           | {:error, Error.t()}
   def available_devices do
     case Native.available_devices() do
