@@ -31,13 +31,13 @@ defmodule WhisperCt2.Native do
     # Optional variants on x86_64 Linux. Opt in via `WHISPER_CT2_VARIANT`:
     #   - `mkl`  : Intel-tuned MKL build (CPU only; CUDA still loaded
     #              dynamically on CUDA hosts).
-    #
-    # A `--rocm` variant (AMD ROCm/HIP) is planned for a follow-up release.
-    # For now, source-build with `WHISPER_CT2_BUILD=1
-    # WHISPER_CT2_FEATURES="hip dnnl"` on a ROCm 6.2+ host.
+    #   - `rocm` : AMD ROCm/HIP GPU build. Requires ROCm 7.x at runtime
+    #              (libamdhip64, libhipblas). Mutually exclusive with the
+    #              CUDA path bundled in the default artefact.
     variants: %{
       "x86_64-unknown-linux-gnu" => [
-        mkl: fn -> System.get_env("WHISPER_CT2_VARIANT") == "mkl" end
+        mkl: fn -> System.get_env("WHISPER_CT2_VARIANT") == "mkl" end,
+        rocm: fn -> System.get_env("WHISPER_CT2_VARIANT") == "rocm" end
       ]
     },
     features: @cargo_features

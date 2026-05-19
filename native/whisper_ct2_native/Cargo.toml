@@ -1,6 +1,6 @@
 [package]
 name = "whisper_ct2_native"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 rust-version = "1.85"
 
@@ -65,7 +65,7 @@ accelerate = ["ct2rs/accelerate"]
 # Pinned to a commit SHA so reproducibility holds across rebuilds.
 # Track: https://github.com/jkawamoto/ctranslate2-rs/pull/139
 [patch.crates-io]
-ct2rs = { git = "https://github.com/rubas/ctranslate2-rs", rev = "3f5cfdddb97c3405c471839acb8c812fdd85b8eb" }
+ct2rs = { git = "https://github.com/rubas/ctranslate2-rs", rev = "26a2553e7ddf1ee33d03e7842a5dd196d3ca364e" }
 
 [lints.rust]
 # `deny` rather than `forbid`: ndarray's `s!` macro emits internal
