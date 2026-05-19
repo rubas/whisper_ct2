@@ -1,6 +1,6 @@
 %{
-  "libwhisper_ct2_native-v0.3.1-nif-2.17-aarch64-apple-darwin.so.tar.gz" => "sha256:49a446cce1914bb407fbcc74d3996e9422f18b076d839e2b90feff5969ccb41f",
-  "libwhisper_ct2_native-v0.3.1-nif-2.17-aarch64-unknown-linux-gnu.so.tar.gz" => "sha256:7fe292122b81099f7c2ac8a751b66f38c87cfdb62b3aa0f0e1ef1c0de1a2382c",
-  "libwhisper_ct2_native-v0.3.1-nif-2.17-x86_64-unknown-linux-gnu--mkl.so.tar.gz" => "sha256:1954142295bf2949f708ec36ac658b12c28a702a121bfc1d88c5bd132ee3c10a",
-  "libwhisper_ct2_native-v0.3.1-nif-2.17-x86_64-unknown-linux-gnu.so.tar.gz" => "sha256:2c3ac945d91f72d3d60f40c59be2348a4052a4afa59c2ca7206d783f56d7abac",
+  "libwhisper_ct2_native-v0.4.0-nif-2.17-aarch64-apple-darwin.so.tar.gz" => "sha256:660f3db42eedb7626c7dca67c394dcee650f234c986591fa3668eb7214eeecab",
+  "libwhisper_ct2_native-v0.4.0-nif-2.17-aarch64-unknown-linux-gnu.so.tar.gz" => "sha256:a8ae5618786ac02c4c9c2b7878d3203e4ba4905d23ad9fad8af54fbf0ab55db4",
+  "libwhisper_ct2_native-v0.4.0-nif-2.17-x86_64-unknown-linux-gnu--mkl.so.tar.gz" => "sha256:db7023ee0a2bbe4f3a8ac53cd0df3f600b4d04ce810df611c3344a0c13b4198d",
+  "libwhisper_ct2_native-v0.4.0-nif-2.17-x86_64-unknown-linux-gnu.so.tar.gz" => "sha256:0a85612aaed3c0945bb8491e1a93da720b26fa0a8872767c04d36da8e75e0850",
 }
