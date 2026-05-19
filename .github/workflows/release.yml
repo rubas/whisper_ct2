@@ -119,24 +119,21 @@ jobs:
             features: mkl cuda-dynamic
             install_cuda: true
 
-          # NOTE: x86_64-unknown-linux-gnu--rocm (AMD ROCm/HIP) is intentionally
-          # NOT in the release matrix for v0.4.0. The `hip` cargo feature is
-          # plumbed through (see native/whisper_ct2_native/Cargo.toml + the
-          # vendored ct2rs patch), so source builds with
-          # `WHISPER_CT2_BUILD=1 WHISPER_CT2_FEATURES="hip dnnl"` work on hosts
-          # with ROCm 6.2+ installed. Shipping a prebuilt ROCm artefact via
-          # apt-installed SDK on a GH-hosted runner is blocked on CTranslate2's
-          # CMake HIP detection requiring a real AMD GPU at configure time
-          # (`amdgpu-arch failed with error Failed to get device count` → cmake
-          # falls back to passing `-x hip` to plain g++). The follow-up is
-          # tracked in a separate issue and will land in a future release once
-          # we switch the ROCm build to AMD's official rocm/dev-ubuntu-* Docker
-          # image (or move it to a self-hosted GPU runner).
-          #
-          # Keep the Install ROCm SDK / Bundle libctranslate2 steps below; they
-          # are gated on matrix.install_rocm and harmless when the entry is
-          # absent. Restoring the entry should be a 12-line revert of this
-          # comment.
+          # x86_64 Linux: AMD ROCm/HIP variant. Mutually exclusive with the
+          # CUDA backend (CTranslate2's HIP CMake arm fatal-errors on
+          # WITH_CUDA=ON). ROCm has no equivalent to `cuda-dynamic`, so
+          # the resulting binary only runs on hosts with the ROCm runtime
+          # installed (libamdhip64, libhipblas). On a GPU-less build host
+          # we bypass CMake's `amdgpu-arch` autodetect via
+          # CMAKE_HIP_COMPILER_FORCED in the ct2rs build script.
+          - id: x86_64-unknown-linux-gnu--rocm
+            suffix: "--rocm"
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            lib_ext: so
+            features: hip dnnl
+            install_cuda: false
+            install_rocm: true
 
           # aarch64 Linux: Graviton/Grace, oneDNN, optional CUDA via dynamic loading
           - id: aarch64-unknown-linux-gnu
@@ -196,8 +193,14 @@ jobs:
 
       - name: Install ROCm SDK
         if: matrix.install_rocm
+        env:
+          # Pinned ROCm version. AMD ships the apt repo at
+          # https://repo.radeon.com/rocm/apt/<version>/dists/noble/main.
+          # Bumping this knob is the only change needed to track a new
+          # ROCm release.
+          ROCM_VERSION: "7.2.3"
         run: |
-          # ROCm SDK is required at *build* time to compile the .hip kernels.
+          # ROCm SDK is required at *build* time to compile the HIP kernels.
           # We install only the development packages; the runtime libraries
           # (libamdhip64, libhipblas) must be present on the consumer's
           # machine — there is no equivalent to CUDA dynamic-loading.
@@ -205,11 +208,12 @@ jobs:
           wget -qO- https://repo.radeon.com/rocm/rocm.gpg.key | \
             sudo gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
           echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] \
-            https://repo.radeon.com/rocm/apt/6.2.4 noble main" | \
+            https://repo.radeon.com/rocm/apt/${ROCM_VERSION} noble main" | \
             sudo tee /etc/apt/sources.list.d/rocm.list
-          # Ubuntu 24.04 ships rocminfo / rocm-cmake / hipcc 5.7.x that
-          # apt prefers over the AMD repo's 6.2.4 versions; pin the AMD
-          # repo above the Ubuntu archive so the SDK install resolves.
+          # Ubuntu 24.04 ships older versions of rocminfo / rocm-cmake /
+          # hipcc that apt prefers over the AMD repo's newer ones; pin
+          # the AMD repo above the Ubuntu archive so the SDK install
+          # resolves.
           sudo tee /etc/apt/preferences.d/rocm-pin-600 >/dev/null <<'PIN'
           Package: *
           Pin: origin repo.radeon.com
@@ -217,25 +221,30 @@ jobs:
           PIN
           sudo apt-get update
           # Install only the components CTranslate2's HIP build needs:
-          # - hipcc                          HIP compiler driver (wraps clang++)
-          # - rocm-device-libs               GPU bitcode the HIP compiler links
-          #                                  against; without it `clang++` errors
-          #                                  with "cannot find ROCm device library"
-          # - hipblas-dev, hiprand-dev,      linkable libs + headers
-          #   hipcub-dev, rocprim-dev,
+          # - hipcc                HIP compiler driver (wraps clang++)
+          # - rocm-device-libs     GPU bitcode the HIP compiler links against
+          # - rocm-llvm            ships /opt/rocm/lib/llvm/bin/clang++
+          # - hipblas-dev,         linkable libs + headers
+          #   hiprand-dev,
+          #   hipcub-dev,
+          #   rocprim-dev,
           #   rocthrust-dev
           # Skip rocm-hip-sdk meta-package — it pulls rocminfo and other
           # runtime tooling we don't need at build time.
           sudo apt-get install -y --no-install-recommends \
-            hipcc rocm-device-libs \
+            hipcc rocm-device-libs rocm-llvm \
             hipblas-dev hiprand-dev hipcub-dev rocprim-dev rocthrust-dev
           echo "PATH=/opt/rocm/bin:$PATH" >> "$GITHUB_ENV"
           echo "ROCM_PATH=/opt/rocm" >> "$GITHUB_ENV"
           # Default GFX targets. Mirrors AMD's "common" deploy set:
           # gfx906 (Vega20/MI50), gfx908 (MI100), gfx90a (MI200/MI210/MI250),
-          # gfx942 (MI300), gfx1030 (RDNA2 / RX 6000), gfx1100 (RDNA3 / RX 7900).
-          echo "CMAKE_HIP_ARCHITECTURES=gfx906;gfx908;gfx90a;gfx942;gfx1030;gfx1100" \
+          # gfx942 (MI300), gfx1030 (RDNA2 / RX 6000), gfx1100 (RDNA3 / RX 7900),
+          # gfx1200/gfx1201 (RDNA4 / RX 9000, ROCm 7+).
+          echo "CMAKE_HIP_ARCHITECTURES=gfx906;gfx908;gfx90a;gfx942;gfx1030;gfx1100;gfx1200;gfx1201" \
             >> "$GITHUB_ENV"
+          # Verify hipcc and clang++ are where the ct2rs build script
+          # expects them so a packaging change is loud, not silent.
+          ls -la /opt/rocm/bin/hipcc /opt/rocm/lib/llvm/bin/clang++
 
       # --- Build ---
 

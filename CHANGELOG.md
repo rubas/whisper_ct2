@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.1
+
+### Added
+
+- Prebuilt `x86_64-unknown-linux-gnu--rocm` artefact. Opt in at install
+  time with `WHISPER_CT2_VARIANT=rocm`. Built against ROCm 7.2.3;
+  requires `libamdhip64` + `libhipblas` at runtime. The artefact bundles
+  a private `libctranslate2.so` next to the NIF and uses an `$ORIGIN`
+  rpath, so no `LD_LIBRARY_PATH` setup is required. Default compiled
+  GFX targets: gfx906, gfx908, gfx90a, gfx942, gfx1030, gfx1100,
+  gfx1200, gfx1201.
+
+### Internal
+
+- Vendored ct2rs patch updated (rev `26a2553`) to force
+  `CMAKE_HIP_COMPILER` and skip the `amdgpu-arch` autodetect that
+  required a real AMD GPU at configure time. Lets the ROCm artefact
+  build reproducibly on GPU-less CI runners.
+- Release workflow's ROCm SDK install bumped from 6.2.4 to 7.2.3 and now
+  pulls `rocm-llvm` alongside `rocm-device-libs` so the explicit
+  `clang++` path resolves.
+
 ## 0.4.0
 
 ### Added
