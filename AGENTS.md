@@ -53,3 +53,24 @@ Precompiled artefacts are built on tag push by
 Consumers fetch the artefact matching their triple through
 `rustler_precompiled`. Opt into a source build with `WHISPER_CT2_BUILD=1`
 or pick an MKL artefact on x86_64 Linux with `WHISPER_CT2_VARIANT=mkl`.
+
+## Hex publish flow
+
+1. Bump `@version` in `mix.exs` and add a `CHANGELOG.md` entry. Push to
+   `main`.
+2. The `release.yml` workflow detects the version bump, builds NIF
+   tarballs for every target/variant, creates the tag, and uploads the
+   tarballs plus `SHA256SUMS` to the GitHub release.
+3. Locally, regenerate the checksum file from the published assets,
+   then commit and push it:
+
+   ```bash
+   mix rustler_precompiled.download WhisperCt2.Native --all --ignore-unavailable --print
+   jj describe -m "chore: update NIF checksum for v$(...)" && jj git push -b main
+   ```
+
+   `checksum-Elixir.WhisperCt2.Native.exs` is tracked in git so the
+   checksum that matches each tagged release is reproducible from the
+   repo.
+4. Run `mix hex.publish` from a clean tree. The checksum is included in
+   the Hex tarball via `files: ~w(... checksum-*.exs ...)` in `mix.exs`.
