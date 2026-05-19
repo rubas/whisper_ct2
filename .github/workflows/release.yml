@@ -129,11 +129,14 @@ jobs:
             install_cuda: true
 
           # Apple Silicon: Accelerate framework, no CUDA
+          # cargo emits .dylib on macOS; rustler_precompiled requests .so
+          # for darwin targets (matches Explorer, Tokenizers convention).
           - id: aarch64-apple-darwin
             suffix: ""
             target: aarch64-apple-darwin
             runner: macos-15
-            lib_ext: dylib
+            src_ext: dylib
+            lib_ext: so
             features: accelerate
             install_cuda: false
 
@@ -198,11 +201,12 @@ jobs:
           TARGET: ${{ matrix.target }}
           VERSION: ${{ needs.detect.outputs.version }}
           NIF_VERSION: ${{ needs.detect.outputs.nif_version }}
+          SRC_EXT: ${{ matrix.src_ext || matrix.lib_ext }}
           LIB_EXT: ${{ matrix.lib_ext }}
           SUFFIX: ${{ matrix.suffix }}
         run: |
           SRC_DIR="native/whisper_ct2_native/target/${TARGET}/release"
-          SRC_NAME="libwhisper_ct2_native.${LIB_EXT}"
+          SRC_NAME="libwhisper_ct2_native.${SRC_EXT}"
           LIB_NAME="libwhisper_ct2_native-v${VERSION}-nif-${NIF_VERSION}-${TARGET}${SUFFIX}.${LIB_EXT}"
 
           cp "${SRC_DIR}/${SRC_NAME}" "${SRC_DIR}/${LIB_NAME}"

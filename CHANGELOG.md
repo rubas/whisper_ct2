@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1
+
+### Fixed
+
+- Release workflow now packages the macOS NIF as `.so.tar.gz` (matching
+  `rustler_precompiled`'s expectation) instead of `.dylib.tar.gz`. The
+  v0.3.0 macOS artefact was unreachable by consumers; v0.3.1 fixes it
+  with no code changes.
+
 ## 0.3.0
 
 ### Breaking
