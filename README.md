@@ -70,8 +70,11 @@ right one automatically based on your target triple:
 | `aarch64-apple-darwin`              | Accelerate  | none           | Apple Silicon (M1+). Uses Accelerate / AMX paths.    |
 | `x86_64-unknown-linux-gnu`          | oneDNN      | `cuda-dynamic` | Default x86_64 binary; runs well on Intel and AMD.   |
 | `x86_64-unknown-linux-gnu` (`mkl`)  | Intel MKL   | `cuda-dynamic` | Intel-tuned variant. Opt in via env var (below).     |
-| `x86_64-unknown-linux-gnu` (`rocm`) | oneDNN      | ROCm/HIP       | AMD GPU build. **Requires ROCm runtime on the host.** Opt in via env var. |
 | `aarch64-unknown-linux-gnu`         | oneDNN      | `cuda-dynamic` | Graviton/Grace, optional CUDA on GH200-class hosts.  |
+
+> **AMD ROCm/HIP** is supported as a source build only in 0.4.0
+> (`WHISPER_CT2_BUILD=1 WHISPER_CT2_FEATURES="hip dnnl"`). A prebuilt
+> `--rocm` artefact is planned for a follow-up release.
 
 `cuda-dynamic` defers loading `libcudart` until first GPU use, so each artefact
 still runs on hosts without CUDA installed. `:device` selection picks CUDA when
@@ -90,25 +93,29 @@ WHISPER_CT2_VARIANT=mkl mix deps.compile whisper_ct2
 `rustler_precompiled` reads this env var at install time and selects the `--mkl`
 artefact instead of the default.
 
-### Selecting the ROCm variant (AMD GPUs)
+### Source-building for AMD GPUs (ROCm/HIP)
 
-For hosts with AMD GPUs and the ROCm runtime installed:
+For hosts with AMD GPUs and the ROCm 6.2+ SDK installed at `/opt/rocm`
+(override with `ROCM_PATH`):
 
 ```bash
-WHISPER_CT2_VARIANT=rocm mix deps.compile whisper_ct2
+WHISPER_CT2_BUILD=1 WHISPER_CT2_FEATURES="hip dnnl" mix compile
 ```
 
-The ROCm artefact ships with a bundled `libctranslate2.so` alongside the NIF
-and uses an `$ORIGIN` rpath, so no `LD_LIBRARY_PATH` setup is required. The
-host must have ROCm 6.2+ installed (provides `libamdhip64.so`,
-`libhipblas.so`) — unlike the CUDA path, there is no dynamic-loading
-fallback to CPU, so this artefact will fail to load on hosts without ROCm.
-Use `:device, :cuda` is rejected on this build; pick `:auto` (resolves to
-CUDA on this build's terms — see `available_devices/0`).
+The build links the shared `libctranslate2.so` produced by CTranslate2's
+HIP CMake branch and embeds an rpath to it; runtime requires
+`libamdhip64.so` and `libhipblas.so` to be present (no dynamic-loading
+fallback to CPU). `device: :cuda` and `device: :auto` resolve to the AMD
+GPU — CTranslate2 reuses `Device::CUDA` internally for HIP; the Elixir
+`available_devices/0` reports `:hip_supported: true` so callers can
+distinguish.
 
-Default compiled GFX targets: gfx906, gfx908, gfx90a, gfx942, gfx1030,
-gfx1100. For source builds you can override with
-`CMAKE_HIP_ARCHITECTURES="gfx1100"` (semicolon-separated).
+Override the GFX target list with `CMAKE_HIP_ARCHITECTURES="gfx1100"`
+(semicolon-separated). Common targets: gfx906 (Vega20/MI50), gfx908
+(MI100), gfx90a (MI200/MI210/MI250), gfx942 (MI300), gfx1030 (RDNA2 /
+RX 6000), gfx1100 (RDNA3 / RX 7900).
+
+A prebuilt `--rocm` artefact is planned for a follow-up release.
 
 ### Build from source with a custom backend
 
