@@ -196,16 +196,27 @@ jobs:
           # We install only the development packages; the runtime libraries
           # (libamdhip64, libhipblas) must be present on the consumer's
           # machine — there is no equivalent to CUDA dynamic-loading.
-          # AMD's repo signing key and apt source:
+          sudo install -d -m 0755 /etc/apt/keyrings
           wget -qO- https://repo.radeon.com/rocm/rocm.gpg.key | \
             sudo gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
           echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] \
             https://repo.radeon.com/rocm/apt/6.2.4 noble main" | \
             sudo tee /etc/apt/sources.list.d/rocm.list
+          # Ubuntu 24.04 ships rocminfo / rocm-cmake / hipcc 5.7.x that
+          # apt prefers over the AMD repo's 6.2.4 versions; pin the AMD
+          # repo above the Ubuntu archive so the SDK install resolves.
+          sudo tee /etc/apt/preferences.d/rocm-pin-600 >/dev/null <<'PIN'
+          Package: *
+          Pin: origin repo.radeon.com
+          Pin-Priority: 600
+          PIN
           sudo apt-get update
+          # Install only the components CTranslate2's HIP build needs:
+          # hipcc (compiler), hipblas / hiprand / hipcub / rocprim / rocthrust
+          # (libs + headers). Skip rocm-hip-sdk meta-package — it pulls
+          # rocminfo and other runtime tooling we don't need at build time.
           sudo apt-get install -y --no-install-recommends \
-            rocm-hip-sdk hipblas-dev hipcub-dev rocprim-dev rocthrust-dev \
-            hiprand-dev
+            hipcc hipblas-dev hiprand-dev hipcub-dev rocprim-dev rocthrust-dev
           echo "PATH=/opt/rocm/bin:$PATH" >> "$GITHUB_ENV"
           echo "ROCM_PATH=/opt/rocm" >> "$GITHUB_ENV"
           # Default GFX targets. Mirrors AMD's "common" deploy set:
