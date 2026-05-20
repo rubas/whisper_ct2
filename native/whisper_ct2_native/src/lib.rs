@@ -446,7 +446,7 @@ fn nif_model_info(env: Env<'_>, model: ResourceArc<WhisperResource>) -> Term<'_>
 }
 
 fn decode_pcm_f32(bytes: &[u8]) -> Result<Vec<f32>, NativeError> {
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err(NativeError::new(
             "invalid_request",
             "samples binary length must be a multiple of 4 (f32)",
