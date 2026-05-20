@@ -52,7 +52,13 @@ jobs:
             SHOULD_RELEASE=true
           else
             VERSION="$(sed -n 's/^  @version "\([^"]*\)"$/\1/p' mix.exs | head -n1)"
-            PREVIOUS_VERSION="$(git show HEAD^:mix.exs 2>/dev/null | sed -n 's/^  @version "\([^"]*\)"$/\1/p' | head -n1)"
+            # The root commit has no parent; guard HEAD^ so `set -eo pipefail`
+            # does not abort the step on the very first commit of the repo.
+            if git rev-parse -q --verify "HEAD^" >/dev/null; then
+              PREVIOUS_VERSION="$(git show HEAD^:mix.exs 2>/dev/null | sed -n 's/^  @version "\([^"]*\)"$/\1/p' | head -n1)"
+            else
+              PREVIOUS_VERSION=""
+            fi
 
             if [ -z "$VERSION" ]; then
               echo "Failed to read current mix.exs version" >&2
