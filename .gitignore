@@ -1,0 +1,33 @@
+# Mix
+/_build/
+/cover/
+/deps/
+/doc/
+/tmp/
+erl_crash.dump
+*.ez
+
+# Hex tarball
+whisper_ct2-*.tar
+
+# Rust native artifacts
+native/*/target/
+priv/native/
+
+# Test fixtures — most are downloaded on demand by
+# test/support/fixtures.ex. The golden parity fixtures are the
+# exception: small, version-pinned, checked in so parity tests run
+# without network access. Regenerate via the corresponding scripts
+# under tools/.
+test/fixtures/*
+!test/fixtures/mel_golden/
+!test/fixtures/words_golden/
+
+# Local caches
+.cargo-home/
+.hex-home/
+.mix-home/
+.dprint-cache/
+
+# Claude
+.claude/

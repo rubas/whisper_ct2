@@ -1,0 +1,48 @@
+name: Integration
+
+# Slow path: downloads ~75 MB Whisper model + JFK audio fixture and runs a
+# real end-to-end CTranslate2 transcription. Not gated on every PR; kept on
+# manual dispatch + a weekly cron so upstream model/audio source rot is
+# noticed within a week.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MIX_ENV: test
+  ELIXIR_VERSION: "1.20.0-rc.5"
+  OTP_VERSION: "29.0"
+  RUST_TOOLCHAIN: "1.95.0"
+
+jobs:
+  integration:
+    name: End-to-end transcription
+    runs-on: ubuntu-latest
+    # With the sccache + Cargo-target caches warm, a successful integration
+    # run lands around 5 min; a cold rebuild of CTranslate2 sits at ~10 min.
+    # 15 min gives a comfortable margin on top of cold-rebuild without
+    # waiting through a hang for half an hour.
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Shared build env
+        uses: ./.github/actions/setup
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+          rust-toolchain: ${{ env.RUST_TOOLCHAIN }}
+          cache-fixtures: "true"
+
+      - name: Run integration tests
+        run: task test:integration
