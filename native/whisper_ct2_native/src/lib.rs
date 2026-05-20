@@ -41,16 +41,6 @@ use atoms::{error, ok};
 /// `true` when this build was compiled with any CUDA cargo feature.
 const CUDA_SUPPORTED: bool = cfg!(any(feature = "cuda", feature = "cuda-dynamic"));
 
-/// `true` when this build was compiled with the HIP/ROCm cargo feature.
-/// CTranslate2 reuses `Device::CUDA` for HIP at the C++ ABI level — the
-/// flag exists so the Elixir side can report the actual backend.
-const HIP_SUPPORTED: bool = cfg!(feature = "hip");
-
-/// `true` when *any* GPU backend was compiled in. Used by
-/// `resolve_device` so `:auto` / `:cuda` work the same on CUDA and HIP
-/// builds.
-const GPU_SUPPORTED: bool = CUDA_SUPPORTED || HIP_SUPPORTED;
-
 /// Structured error returned to Elixir as a `NifMap`. The Elixir side maps
 /// `type` to a `WhisperCt2.Error.reason` atom.
 #[derive(Debug, NifMap)]
@@ -152,10 +142,6 @@ struct AvailableDevices {
     cpu: i32,
     cuda: i32,
     cuda_supported: bool,
-    /// `true` when this build was compiled with the HIP/ROCm backend.
-    /// On HIP builds the `cuda` count reflects AMD GPUs (CTranslate2
-    /// uses `Device::CUDA` for HIP too).
-    hip_supported: bool,
 }
 
 #[derive(NifMap)]
@@ -295,15 +281,13 @@ fn compute_type_label(c: ComputeType) -> &'static str {
     }
 }
 
-/// Resolves `:auto` to the compiled GPU backend (CUDA or HIP) when one is
-/// built in and a device is visible. Explicit `:cuda` returns an error
-/// if either condition fails. On HIP builds, `:cuda` is accepted as an
-/// alias because CTranslate2's C++ ABI uses `Device::CUDA` for HIP too.
+/// Resolves `:auto` to CUDA when the build has CUDA support and a device is
+/// visible. Explicit `:cuda` returns an error if either condition fails.
 fn resolve_device(requested: Option<&str>) -> Result<Device, NativeError> {
     let lowered = requested.map(str::to_ascii_lowercase);
     match lowered.as_deref() {
         None | Some("auto") => {
-            if GPU_SUPPORTED && get_device_count(Device::CUDA) > 0 {
+            if CUDA_SUPPORTED && get_device_count(Device::CUDA) > 0 {
                 Ok(Device::CUDA)
             } else {
                 Ok(Device::CPU)
@@ -312,25 +296,20 @@ fn resolve_device(requested: Option<&str>) -> Result<Device, NativeError> {
         Some(other) => {
             let device = parse_device(other)?;
             if matches!(device, Device::CUDA) {
-                if !GPU_SUPPORTED {
+                if !CUDA_SUPPORTED {
                     return Err(NativeError::new(
                         "invalid_request",
                         "this build of whisper_ct2 was not compiled with GPU support",
                     )
                     .with_detail(
                         "rebuild_with",
-                        "WHISPER_CT2_FEATURES=cuda-dynamic mix compile  # NVIDIA \
-                         | WHISPER_CT2_FEATURES=\"hip dnnl\" mix compile  # AMD ROCm",
+                        "WHISPER_CT2_FEATURES=cuda-dynamic mix compile  # NVIDIA",
                     ));
                 }
                 if get_device_count(Device::CUDA) == 0 {
                     return Err(NativeError::new(
                         "invalid_request",
-                        if HIP_SUPPORTED {
-                            "no AMD GPUs visible to CTranslate2 (HIP build)"
-                        } else {
-                            "no CUDA devices visible to CTranslate2"
-                        },
+                        "no CUDA devices visible to CTranslate2",
                     ));
                 }
             }
@@ -343,7 +322,7 @@ fn resolve_device(requested: Option<&str>) -> Result<Device, NativeError> {
 #[rustler::nif]
 fn nif_available_devices(env: Env<'_>) -> Term<'_> {
     let result = run_with_panic_protection(|| {
-        let cuda = if GPU_SUPPORTED {
+        let cuda = if CUDA_SUPPORTED {
             get_device_count(Device::CUDA)
         } else {
             0
@@ -352,7 +331,6 @@ fn nif_available_devices(env: Env<'_>) -> Term<'_> {
             cpu: get_device_count(Device::CPU),
             cuda,
             cuda_supported: CUDA_SUPPORTED,
-            hip_supported: HIP_SUPPORTED,
         })
     });
     encode_result(env, result)
@@ -672,7 +650,7 @@ mod tests {
 
     #[test]
     fn resolve_device_auto_falls_back_to_cpu_without_gpu() {
-        if !GPU_SUPPORTED || get_device_count(Device::CUDA) == 0 {
+        if !CUDA_SUPPORTED || get_device_count(Device::CUDA) == 0 {
             assert!(matches!(resolve_device(None).unwrap(), Device::CPU));
             assert!(matches!(resolve_device(Some("auto")).unwrap(), Device::CPU));
         }
@@ -680,7 +658,7 @@ mod tests {
 
     #[test]
     fn resolve_device_rejects_cuda_when_unavailable() {
-        if !GPU_SUPPORTED {
+        if !CUDA_SUPPORTED {
             let err = resolve_device(Some("cuda")).unwrap_err();
             assert_eq!(err.r#type, "invalid_request");
             assert!(err.message.contains("GPU"));

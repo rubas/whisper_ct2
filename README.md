@@ -70,7 +70,6 @@ right one automatically based on your target triple:
 | `aarch64-apple-darwin`              | Accelerate  | none           | Apple Silicon (M1+). Uses Accelerate / AMX paths.    |
 | `x86_64-unknown-linux-gnu`          | oneDNN      | `cuda-dynamic` | Default x86_64 binary; runs well on Intel and AMD.   |
 | `x86_64-unknown-linux-gnu` (`mkl`)  | Intel MKL   | `cuda-dynamic` | Intel-tuned variant. Opt in via env var (below).     |
-| `x86_64-unknown-linux-gnu` (`rocm`) | oneDNN      | ROCm/HIP       | AMD GPU build (ROCm 7.x). **Requires ROCm runtime on the host.** Opt in via env var. |
 | `aarch64-unknown-linux-gnu`         | oneDNN      | `cuda-dynamic` | Graviton/Grace, optional CUDA on GH200-class hosts.  |
 
 `cuda-dynamic` defers loading `libcudart` until first GPU use, so each artefact
@@ -90,56 +89,14 @@ WHISPER_CT2_VARIANT=mkl mix deps.compile whisper_ct2
 `rustler_precompiled` reads this env var at install time and selects the `--mkl`
 artefact instead of the default.
 
-### Selecting the ROCm variant (AMD GPUs)
-
-For hosts with AMD GPUs and the ROCm 7.x runtime installed:
-
-```bash
-WHISPER_CT2_VARIANT=rocm mix deps.compile whisper_ct2
-```
-
-The artefact bundles `libctranslate2.so` next to the NIF and uses an
-`$ORIGIN` rpath, so no `LD_LIBRARY_PATH` setup is needed. Runtime
-requires `libamdhip64.so` and `libhipblas.so` from ROCm 7.x (no
-dynamic-loading fallback to CPU — the artefact will fail to load on
-hosts without ROCm).
-
-`device: :cuda` and `device: :auto` resolve to the AMD GPU on this
-build — CTranslate2 reuses `Device::CUDA` internally for HIP. The
-Elixir `available_devices/0` reports `:hip_supported: true` so callers
-can distinguish backends.
-
-Compiled GFX targets: gfx906, gfx908, gfx90a, gfx942, gfx1030, gfx1100.
-For source builds (incl. RDNA4 gfx1200/gfx1201 when your device libs
-support them), override with `CMAKE_HIP_ARCHITECTURES="gfx1100;gfx1200"`
-(semicolon-separated).
-
 ### Build from source with a custom backend
 
 For source builds you can pick any combination of `ct2rs` features:
 
 ```bash
 WHISPER_CT2_BUILD=1 WHISPER_CT2_FEATURES="dnnl cuda-dynamic" mix compile
-# other options: mkl, openblas, accelerate, cuda, cuda-dynamic, hip
+# other options: mkl, openblas, accelerate, cuda, cuda-dynamic
 ```
-
-`hip` is mutually exclusive with `cuda` / `cuda-dynamic` (CTranslate2's
-HIP CMake arm refuses to build with WITH_CUDA=ON). Source builds with
-`hip` need the ROCm SDK at `ROCM_PATH` (default `/opt/rocm`).
-
-#### Source-build dependencies for `hip`
-
-On apt-based distros, `rocm-dev` pulls everything in. On NixOS or other
-split-package distros, install:
-
-```
-clr  hipblas  hipblas-common  rocblas  hiprand  rocrand  rocprim
-rocthrust  hipcub  rocm-device-libs  rocm-comgr  rocm-core  rocm-runtime
-llvm.clang  llvm.lld
-```
-
-`find_package(hiprand)` inside CTranslate2's CMake transitively pulls in
-the rest via the `AMDDeviceLibs` / `amd_comgr` cmake configs.
 
 ### Runtime device selection
 

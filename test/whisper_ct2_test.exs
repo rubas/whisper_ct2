@@ -95,17 +95,12 @@ defmodule WhisperCt2Test do
               %{
                 cpu: cpu,
                 cuda: cuda,
-                cuda_supported: cuda_supported,
-                hip_supported: hip_supported
+                cuda_supported: cuda_supported
               }} = WhisperCt2.available_devices()
 
       assert is_integer(cpu) and cpu >= 0
       assert is_integer(cuda) and cuda >= 0
       assert is_boolean(cuda_supported)
-      assert is_boolean(hip_supported)
-      # `cuda` and `hip` are mutually exclusive cargo features; only one
-      # can be true on a given build.
-      refute cuda_supported and hip_supported
     end
   end
 

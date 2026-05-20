@@ -119,22 +119,6 @@ jobs:
             features: mkl cuda-dynamic
             install_cuda: true
 
-          # x86_64 Linux: AMD ROCm/HIP variant. Mutually exclusive with the
-          # CUDA backend (CTranslate2's HIP CMake arm fatal-errors on
-          # WITH_CUDA=ON). ROCm has no equivalent to `cuda-dynamic`, so
-          # the resulting binary only runs on hosts with the ROCm runtime
-          # installed (libamdhip64, libhipblas). On a GPU-less build host
-          # we bypass CMake's `amdgpu-arch` autodetect via
-          # CMAKE_HIP_COMPILER_FORCED in the ct2rs build script.
-          - id: x86_64-unknown-linux-gnu--rocm
-            suffix: "--rocm"
-            target: x86_64-unknown-linux-gnu
-            runner: ubuntu-24.04
-            lib_ext: so
-            features: hip dnnl
-            install_cuda: false
-            install_rocm: true
-
           # aarch64 Linux: Graviton/Grace, oneDNN, optional CUDA via dynamic loading
           - id: aarch64-unknown-linux-gnu
             suffix: ""
@@ -191,75 +175,6 @@ jobs:
           sudo apt-get install -y --no-install-recommends cuda-toolkit-12-6
           echo "PATH=/usr/local/cuda/bin:$PATH" >> "$GITHUB_ENV"
 
-      - name: Install ROCm SDK
-        if: matrix.install_rocm
-        env:
-          # Pinned ROCm version. AMD ships the apt repo at
-          # https://repo.radeon.com/rocm/apt/<version>/dists/noble/main.
-          # Bumping this knob is the only change needed to track a new
-          # ROCm release.
-          ROCM_VERSION: "7.2.3"
-        run: |
-          # ROCm SDK is required at *build* time to compile the HIP kernels.
-          # We install only the development packages; the runtime libraries
-          # (libamdhip64, libhipblas) must be present on the consumer's
-          # machine — there is no equivalent to CUDA dynamic-loading.
-          sudo install -d -m 0755 /etc/apt/keyrings
-          wget -qO- https://repo.radeon.com/rocm/rocm.gpg.key | \
-            sudo gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
-          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] \
-            https://repo.radeon.com/rocm/apt/${ROCM_VERSION} noble main" | \
-            sudo tee /etc/apt/sources.list.d/rocm.list
-          # Ubuntu 24.04 ships older versions of rocminfo / rocm-cmake /
-          # hipcc that apt prefers over the AMD repo's newer ones; pin
-          # the AMD repo above the Ubuntu archive so the SDK install
-          # resolves.
-          sudo tee /etc/apt/preferences.d/rocm-pin-600 >/dev/null <<'PIN'
-          Package: *
-          Pin: origin repo.radeon.com
-          Pin-Priority: 600
-          PIN
-          sudo apt-get update
-          # Install only the components CTranslate2's HIP build needs:
-          # - hipcc                HIP compiler driver (wraps clang++)
-          # - hip-dev              ships /opt/rocm/include/hip/* headers
-          #                        (transitively pulled by hip-runtime-amd
-          #                        on apt-installed ROCm 7.x, but listed
-          #                        explicitly so a packaging change is
-          #                        loud not silent)
-          # - rocm-device-libs     GPU bitcode the HIP compiler links against
-          # - rocm-llvm            ships /opt/rocm/lib/llvm/bin/clang++
-          # - hipblas-dev,         linkable libs + headers
-          #   hiprand-dev,
-          #   hipcub-dev,
-          #   rocprim-dev,
-          #   rocthrust-dev
-          # - rocblas-dev,         cmake configs for the rocBLAS / rocRAND
-          #   rocrand-dev          backends that hipblas-config /
-          #                        hiprand-config call via find_dependency.
-          #                        With --no-install-recommends apt does not
-          #                        pull these transitively, so list them
-          #                        explicitly or CMake configure fails with
-          #                        "Could not find rocrand / rocblas".
-          # Skip rocm-hip-sdk meta-package — it pulls rocminfo and other
-          # runtime tooling we don't need at build time.
-          sudo apt-get install -y --no-install-recommends \
-            hipcc hip-dev rocm-device-libs rocm-llvm \
-            hipblas-dev hiprand-dev hipcub-dev rocprim-dev rocthrust-dev \
-            rocblas-dev rocrand-dev
-          echo "PATH=/opt/rocm/bin:$PATH" >> "$GITHUB_ENV"
-          echo "ROCM_PATH=/opt/rocm" >> "$GITHUB_ENV"
-          # Default GFX targets. Mirrors AMD's "common" deploy set:
-          # gfx906 (Vega20/MI50), gfx908 (MI100), gfx90a (MI200/MI210/MI250),
-          # gfx942 (MI300), gfx1030 (RDNA2 / RX 6000), gfx1100 (RDNA3 / RX 7900).
-          # gfx1200/gfx1201 (RDNA4) intentionally omitted until we
-          # confirm ROCm 7.2.3 device libs ship the corresponding bitcode.
-          echo "CMAKE_HIP_ARCHITECTURES=gfx906;gfx908;gfx90a;gfx942;gfx1030;gfx1100" \
-            >> "$GITHUB_ENV"
-          # Verify hipcc and clang++ are where the ct2rs build script
-          # expects them so a packaging change is loud, not silent.
-          ls -la /opt/rocm/bin/hipcc /opt/rocm/lib/llvm/bin/clang++
-
       # --- Build ---
 
       - name: Cargo cache
@@ -289,7 +204,6 @@ jobs:
           SRC_EXT: ${{ matrix.src_ext || matrix.lib_ext }}
           LIB_EXT: ${{ matrix.lib_ext }}
           SUFFIX: ${{ matrix.suffix }}
-          BUNDLE_CTRANSLATE2: ${{ matrix.install_rocm && '1' || '0' }}
         run: |
           SRC_DIR="native/whisper_ct2_native/target/${TARGET}/release"
           SRC_NAME="libwhisper_ct2_native.${SRC_EXT}"
@@ -297,34 +211,6 @@ jobs:
           STAGE_DIR="$(mktemp -d)"
 
           cp "${SRC_DIR}/${SRC_NAME}" "${STAGE_DIR}/${LIB_NAME}"
-
-          if [ "$BUNDLE_CTRANSLATE2" = "1" ]; then
-            # CTranslate2's HIP CMake arm produces a SONAME'd shared
-            # libctranslate2.so.<major>.<minor>.<patch> plus the
-            # libctranslate2.so.<major> and libctranslate2.so symlinks.
-            # The NIF's DT_NEEDED records the SONAME (typically the
-            # .<major> link), so we must ship the whole symlink chain —
-            # not just the real file — for the $ORIGIN rpath lookup to
-            # resolve on ROCm hosts.
-            CT2_DIR=$(find native/whisper_ct2_native/target -type d \
-              -path '*/build' -exec test -e {}/libctranslate2.so \; \
-              -print | head -n1)
-            if [ -z "$CT2_DIR" ]; then
-              echo "libctranslate2.so not found in build output" >&2
-              find native/whisper_ct2_native/target -name 'libctranslate2.so*' >&2 || true
-              exit 1
-            fi
-            # `cp -aP` preserves symlinks as symlinks. The glob matches
-            # libctranslate2.so, libctranslate2.so.<major>, and
-            # libctranslate2.so.<major>.<minor>.<patch>.
-            cp -aP "$CT2_DIR"/libctranslate2.so* "${STAGE_DIR}/"
-            sudo apt-get install -y --no-install-recommends patchelf
-            patchelf --set-rpath '$ORIGIN' "${STAGE_DIR}/${LIB_NAME}"
-            echo "--- bundled ROCm artefact contents ---"
-            ls -la "${STAGE_DIR}/"
-            echo "--- NIF DT_NEEDED ---"
-            patchelf --print-needed "${STAGE_DIR}/${LIB_NAME}"
-          fi
 
           tar -czf "${LIB_NAME}.tar.gz" -C "${STAGE_DIR}" .
           rm -rf "${STAGE_DIR}"

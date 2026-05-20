@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Removed
+
+- AMD ROCm/HIP GPU backend. The `hip` cargo feature, the
+  `WHISPER_CT2_VARIANT=rocm` prebuilt artefact, and the `:hip_supported`
+  field of `available_devices/0` are gone, and the build no longer
+  patches `ct2rs` to a fork. The ROCm path crashed at runtime and was not
+  viable to ship. CUDA (via `cuda-dynamic`) remains the only GPU backend.
+
 ## 0.4.1
 
 ### Added
