@@ -10,12 +10,7 @@ on:
         description: "Tag to build and publish (e.g., v0.1.0)"
         required: true
 
-permissions:
-  contents: write
-
-concurrency:
-  group: release-${{ github.event_name }}-${{ github.ref_name || inputs.tag }}
-  cancel-in-progress: false
+permissions: {} # default: no token scopes; jobs opt in below
 
 env:
   CARGO_TERM_COLOR: always
@@ -25,7 +20,13 @@ env:
 
 jobs:
   detect:
+    name: Resolve release target
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read # read mix.exs, native.ex, and git history
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-detect
+      cancel-in-progress: false
     outputs:
       should_release: ${{ steps.resolve.outputs.should_release }}
       tag: ${{ steps.resolve.outputs.tag }}
@@ -37,6 +38,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Resolve release target
         id: resolve
@@ -103,6 +105,11 @@ jobs:
     if: needs.detect.outputs.should_release == 'true'
     name: ${{ matrix.id }}
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read # checkout the resolved release commit
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-build-${{ matrix.id }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
@@ -152,8 +159,11 @@ jobs:
           # Pin to the SHA detect inspected so artefacts match the version
           # detect resolved, even if `main` moves while the matrix is running.
           ref: ${{ needs.detect.outputs.sha }}
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+      # Cross-target toolchain install with component/target selection; the
+      # rust-toolchain action is the maintained convention here over hand-rolled rustup.
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable # zizmor: ignore[superfluous-actions]
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
@@ -197,7 +207,8 @@ jobs:
         working-directory: native/whisper_ct2_native
         env:
           FEATURES: ${{ matrix.features }}
-        run: cargo build --release --target ${{ matrix.target }} --features "$FEATURES"
+          TARGET: ${{ matrix.target }}
+        run: cargo build --release --target "$TARGET" --features "$FEATURES"
 
       # --- Package ---
 
@@ -229,13 +240,19 @@ jobs:
           if-no-files-found: error
 
   tag:
+    name: Create release tag
     runs-on: ubuntu-24.04
     needs: detect
     if: github.event_name == 'push' && needs.detect.outputs.should_release == 'true' && needs.detect.outputs.tag_exists != 'true'
     permissions:
-      contents: write
+      contents: write # push the release tag
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-tag
+      cancel-in-progress: false
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      # This job pushes the release tag, so the checkout token must persist for
+      # the `git push origin "$TAG"` step below.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 # zizmor: ignore[artipacked]
         with:
           # Same pinning rationale as the release job: tag must point at the
           # commit detect inspected, not whatever `main` looks like by the
@@ -260,6 +277,11 @@ jobs:
       - tag
     if: always() && needs.detect.outputs.should_release == 'true' && needs.build.result == 'success' && (needs.tag.result == 'success' || needs.tag.result == 'skipped')
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write # upload assets to the GitHub release
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-release
+      cancel-in-progress: false
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -275,7 +297,9 @@ jobs:
         run: sha256sum *.tar.gz | tee SHA256SUMS
 
       - name: Create release
-        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+        # action-gh-release handles asset upload + release-notes generation in one
+        # step; replacing it with raw `gh release` calls is not worth the churn here.
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1 # zizmor: ignore[superfluous-actions]
         with:
           tag_name: ${{ needs.detect.outputs.tag }}
           target_commitish: ${{ needs.detect.outputs.sha }}

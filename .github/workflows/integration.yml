@@ -10,12 +10,7 @@ on:
   schedule:
     - cron: "23 4 * * 1"
 
-permissions:
-  contents: read
-
-concurrency:
-  group: integration-${{ github.ref }}
-  cancel-in-progress: true
+permissions: {} # default: no token scopes; jobs opt in below
 
 env:
   MIX_ENV: test
@@ -27,6 +22,11 @@ jobs:
   integration:
     name: End-to-end transcription
     runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout the repository
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-integration
+      cancel-in-progress: true
     # With the sccache + Cargo-target caches warm, a successful integration
     # run lands around 5 min; a cold rebuild of CTranslate2 sits at ~10 min.
     # 15 min gives a comfortable margin on top of cold-rebuild without
@@ -35,6 +35,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
 
       - name: Shared build env
         uses: ./.github/actions/setup

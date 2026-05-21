@@ -44,6 +44,11 @@ tasks:
     cmds:
       - cargo test --manifest-path {{.CARGO_MANIFEST}}
 
+  test:zizmor:
+    desc: Lint GitHub Actions workflows for security issues
+    cmds:
+      - zizmor --offline --persona=pedantic .github/workflows
+
   fmt:
     desc: Format Elixir and Rust sources in place
     cmds:
@@ -87,3 +92,4 @@ tasks:
       - task: lint
       - task: test
       - task: test:rust
+      - task: test:zizmor
