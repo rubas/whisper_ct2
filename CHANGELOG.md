@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Word text from `:word_timestamps` is decoded through the tokenizer's
+  byte-level BPE decoder. Non-ASCII words used to come back as mojibake
+  ("schön" surfaced as "schÃ¶n"), and codepoints split across tokens
+  glued into one giant word; both now match faster-whisper, including
+  per-codepoint word splitting for spaceless languages (zh, ja, th, lo,
+  my, yue). (#19)
+- The last word of every 30 s chunk ends at the alignment's EOT
+  boundary instead of a fabricated 20 ms duration. (#23)
+- Fallback segment ends (unclosed timestamp pair, or
+  `with_timestamps: false`) are bounded by the chunk's real audio
+  length; a 3 s clip no longer reports a segment ending at 30 s. (#24)
+- PCM containing NaN or infinity is rejected as `:invalid_request`
+  instead of silently transcribing the corrupted region as silence.
+  Amplitudes that overflow the mel power are rejected the same way.
+  (#20)
+- The 2 GiB mel-buffer cap is enforced from input sizes before the PCM
+  copy and the mel chunks are allocated, not after. (#21)
+- `WhisperCt2.available_devices/0` runs on a dirty scheduler. On CUDA
+  builds its first call initialises the NVIDIA driver, which used to
+  stall a normal BEAM scheduler for the whole driver init. (#22)
+- `WhisperCt2.load_model/2` fails at load when the tokenizer lacks
+  `<|startofprev|>`, instead of degrading at inference time once
+  `:initial_prompt` is used. (#31)
+
 ## 0.5.0 - 2026-05-20
 
 Initial public release. Native Elixir Whisper speech-to-text backed by

@@ -25,8 +25,11 @@ impl SpecialTokens {
         // in the tokenizer vocab; they live in the model output space
         // immediately after `<|notimestamps|>`, matching faster-whisper's
         // convention: `timestamp_begin = no_timestamps_id + 1`. We
-        // additionally probe `<|startofprev|>` because `initial_prompt`
-        // expects it to exist even though we never store the ID here.
+        // additionally probe `<|startofprev|>` without storing the ID:
+        // `initial_prompt` pushes the literal string into the generate
+        // prompt, and a tokenizer missing the token must fail loudly here
+        // at load, not degrade at inference time.
+        lookup(inner, STARTOFPREV)?;
         let no_timestamps = lookup(inner, NO_TIMESTAMPS)?;
         Ok(Self {
             sot: lookup(inner, SOT)?,
@@ -133,9 +136,10 @@ pub(crate) struct SubSegment {
 /// sub-segments. Token IDs `>= timestamp_begin` are treated as timestamps;
 /// anything before the first timestamp pair is discarded as preamble.
 ///
-/// `chunk_duration_s` is the wall-clock length of the Whisper window
-/// (30 s for every published checkpoint). It is used as the fallback
-/// `end_in_chunk` in two situations:
+/// `content_duration_s` is the wall-clock length of the real audio inside
+/// this chunk's window (≤ 30 s; the final chunk of an audio is usually
+/// shorter — faster-whisper's `content_frames - seek` bound). It is used
+/// as the fallback `end_in_chunk` in two situations:
 ///
 /// 1. **Unclosed pair**: the model emitted `<|t_start|> text [EOT]` with
 ///    no closing timestamp. Some fine-tunes (notably notebotIE Swiss-German)
@@ -143,14 +147,14 @@ pub(crate) struct SubSegment {
 /// 2. **No timestamps at all**: the prompt asked for `<|notimestamps|>`,
 ///    or the fine-tune ignored the timestamp instruction and emitted
 ///    plain text. The whole token stream becomes one sub-segment
-///    spanning `[0, chunk_duration_s)`.
+///    spanning `[0, content_duration_s)`.
 ///
 /// Faster-whisper handles both cases the same way; dropping the text
 /// silently is how multi-second turns turned into empty transcripts.
 pub(crate) fn split_sub_segments(
     token_ids: &[u32],
     timestamp_begin: u32,
-    chunk_duration_s: f32,
+    content_duration_s: f32,
 ) -> Vec<SubSegment> {
     let mut out = Vec::new();
     let mut i = 0;
@@ -172,7 +176,7 @@ pub(crate) fn split_sub_segments(
                 out.push(SubSegment {
                     text_token_ids: token_ids[preamble_start..].to_vec(),
                     start_in_chunk: 0.0,
-                    end_in_chunk: chunk_duration_s,
+                    end_in_chunk: content_duration_s,
                 });
             }
             break;
@@ -190,13 +194,16 @@ pub(crate) fn split_sub_segments(
         if i >= token_ids.len() {
             // Unclosed pair: model emitted `<|t_start|> text [EOT]` with
             // no closing timestamp. Flush the pending text with the
-            // chunk window's end as the fallback boundary instead of
-            // silently dropping it.
+            // chunk's real audio end as the fallback boundary instead of
+            // silently dropping it. A start hallucinated into the silent
+            // padding (past the real audio) is clamped to that same
+            // boundary so the segment cannot invert.
             if text_start < token_ids.len() {
                 out.push(SubSegment {
                     text_token_ids: token_ids[text_start..].to_vec(),
-                    start_in_chunk: timestamp_seconds(start_id, timestamp_begin),
-                    end_in_chunk: chunk_duration_s,
+                    start_in_chunk: timestamp_seconds(start_id, timestamp_begin)
+                        .min(content_duration_s),
+                    end_in_chunk: content_duration_s,
                 });
             }
             break;
@@ -278,7 +285,7 @@ mod tests {
     fn split_sub_segments_flushes_all_text_when_no_timestamps_emitted() {
         // `<|notimestamps|>` mode or fine-tunes that just refuse to emit
         // timestamps: the whole token stream becomes one segment spanning
-        // [0, chunk_duration_s).
+        // [0, content_duration_s).
         let out = split_sub_segments(&[100, 101, 102, 103], BEGIN, CHUNK_S);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].text_token_ids, vec![100, 101, 102, 103]);
@@ -289,7 +296,7 @@ mod tests {
     #[test]
     fn split_sub_segments_flushes_text_after_unclosed_start_timestamp() {
         // Some fine-tunes emit `<|t_start|> text [EOT]` without a closing
-        // timestamp. The text must be flushed with `chunk_duration_s` as
+        // timestamp. The text must be flushed with `content_duration_s` as
         // the fallback end, not dropped.
         let out = split_sub_segments(&[ts(0), 100, 101, 102], BEGIN, CHUNK_S);
         assert_eq!(out.len(), 1);
@@ -308,6 +315,26 @@ mod tests {
         assert_eq!(out[1].text_token_ids, vec![200, 201]);
         assert!((out[1].start_in_chunk - 1.2).abs() < 1e-6);
         assert!((out[1].end_in_chunk - CHUNK_S).abs() < 1e-6);
+    }
+
+    #[test]
+    fn split_sub_segments_fallback_ends_at_content_duration() {
+        // The tail chunk of a 35 s audio holds 5 s of real audio; an
+        // unclosed pair must end there, not at the padded 30 s window.
+        let out = split_sub_segments(&[ts(0), 100], BEGIN, 5.0);
+        assert_eq!(out.len(), 1);
+        assert!((out[0].end_in_chunk - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn split_sub_segments_clamps_unclosed_start_past_content_end() {
+        // A start timestamp hallucinated into the silent padding (10 s
+        // on a 5 s tail) must not yield an inverted segment: the start
+        // is clamped to the content end alongside the fallback end.
+        let out = split_sub_segments(&[ts(500), 100], BEGIN, 5.0);
+        assert_eq!(out.len(), 1);
+        assert!((out[0].start_in_chunk - 5.0).abs() < 1e-6);
+        assert!((out[0].end_in_chunk - 5.0).abs() < 1e-6);
     }
 
     #[test]

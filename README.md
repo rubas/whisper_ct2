@@ -153,9 +153,10 @@ one shape:
   sample rate.
 
 Anything else (paths, raw bare binaries, WAV bytes, MP3, 44.1 kHz, ...)
-is rejected at the boundary with an `:invalid_request` error. There is
-no bundled audio decoder; decode, downmix, and resample upstream using
-your tool of choice. For a one-shot file conversion:
+is rejected at the boundary with an `:invalid_request` error, as are
+non-finite samples (NaN or infinity — usually an upstream decoder bug).
+There is no bundled audio decoder; decode, downmix, and resample
+upstream using your tool of choice. For a one-shot file conversion:
 
 ```bash
 ffmpeg -i input.mp3 -ar 16000 -ac 1 -f f32le output.pcm

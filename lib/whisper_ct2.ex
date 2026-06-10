@@ -221,8 +221,8 @@ defmodule WhisperCt2 do
   - `:with_timestamps` - when `true` (default) the prompt asks the model
     to emit `<|t_..|>` timestamp tokens that split the output into
     sub-segments. Set to `false` for fine-tunes that emit text without
-    timestamps; the chunk's full text becomes one segment spanning
-    `[0, chunk_duration_s)`. Implicitly forced to `true` whenever
+    timestamps; each chunk's full text becomes one segment spanning the
+    chunk's real audio length. Implicitly forced to `true` whenever
     `:word_timestamps` is enabled because alignment needs the timestamp
     scaffolding.
   - Decoding knobs forwarded to CTranslate2: `:beam_size`, `:patience`,

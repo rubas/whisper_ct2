@@ -88,8 +88,8 @@ on for stock OpenAI / `Systran/faster-whisper-*` checkpoints.
 
 Set `with_timestamps: false` for fine-tunes that ignore the timestamp
 instruction or were trained to emit plain text (e.g. some domain
-fine-tunes). The chunk's full text then becomes one segment spanning
-`[0, chunk_duration_s)` instead of being silently dropped.
+fine-tunes). Each chunk's full text then becomes one segment spanning
+the chunk's real audio length instead of being silently dropped.
 
 `:word_timestamps` implicitly forces `:with_timestamps` back to `true` -
 the DTW alignment needs the timestamp scaffolding. Don't combine
@@ -171,9 +171,10 @@ CTranslate2 wants **mono `f32` PCM at the model's sample rate** (always
 
 There is **no built-in decoder**. Paths, raw bare binaries, WAV bytes,
 MP3, etc. are all rejected at the boundary with a clear
-`:invalid_request` error. Decoding, downmixing, and resampling are the
-caller's job; use `ffmpeg`, Membrane, or your platform audio stack
-upstream.
+`:invalid_request` error — as are non-finite samples (NaN or infinity),
+which point at an upstream decoder bug. Decoding, downmixing, and
+resampling are the caller's job; use `ffmpeg`, Membrane, or your
+platform audio stack upstream.
 
 ```bash
 ffmpeg -i input.mp3 -ar 16000 -ac 1 -f f32le output.pcm

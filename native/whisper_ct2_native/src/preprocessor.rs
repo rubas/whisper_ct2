@@ -26,6 +26,8 @@ use rustfft::num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
 use serde::Deserialize;
 
+use crate::errors::invalid_request;
+
 const PREPROCESSOR_CONFIG_FILE: &str = "preprocessor_config.json";
 
 /// Parsed `preprocessor_config.json` plus the (possibly synthesised) mel
@@ -152,6 +154,18 @@ impl Preprocessor {
                 }
             }
 
+            // Finite PCM (enforced at the NIF boundary) still overflows
+            // the f32 mel power once amplitudes get far outside Whisper's
+            // [-1.0, 1.0] contract. This is the last point corruption is
+            // detectable: `normalise_log_mel` launders NaN into the mel
+            // floor and would let garbage transcribe as silence.
+            if mel_chunk.iter().any(|v| !v.is_finite()) {
+                return Err(invalid_request(
+                    "mel power overflowed f32; PCM amplitude is far outside \
+                     the [-1.0, 1.0] contract",
+                ));
+            }
+
             normalise_log_mel(&mut mel_chunk);
             out.push(mel_chunk);
         }
@@ -219,6 +233,32 @@ mod tests {
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect()
+    }
+
+    #[test]
+    fn build_chunks_rejects_mel_power_overflow() {
+        // f32::MAX-scale samples overflow the FFT into ±inf/NaN mel
+        // power. Without this rejection `normalise_log_mel` would flush
+        // the NaN to the silence floor and corrupted audio would
+        // transcribe as {:ok, ...} with garbage text.
+        let preprocessor = Preprocessor {
+            feature_size: 2,
+            hop_length: 4,
+            n_fft: 8,
+            n_samples: 64,
+            nb_max_frames: 16,
+            sampling_rate: 16,
+            mel_filters: Array2::<f64>::ones((2, 5)),
+        };
+        let samples = vec![f32::MAX; 64];
+        let err = preprocessor
+            .build_chunks(&samples)
+            .expect_err("mel power overflow must be rejected");
+        assert_eq!(
+            crate::errors::kind_from_chain(&err),
+            Some("invalid_request")
+        );
+        assert!(format!("{err:#}").contains("amplitude"));
     }
 
     #[test]
