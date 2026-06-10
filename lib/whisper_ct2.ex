@@ -426,10 +426,10 @@ defmodule WhisperCt2 do
     %{
       device: &(&1 in @devices),
       compute_type: &(&1 in @compute_types),
-      device_indices: &non_empty_list_of_non_neg_integers?/1,
-      num_threads_per_replica: &non_neg_integer?/1,
-      max_queued_batches: &is_integer/1,
-      cpu_core_offset: &is_integer/1
+      device_indices: &non_empty_list_of_device_indices?/1,
+      num_threads_per_replica: &non_neg_u32?/1,
+      max_queued_batches: &i32?/1,
+      cpu_core_offset: &i32?/1
     }
   end
 
@@ -440,7 +440,7 @@ defmodule WhisperCt2 do
       prefix: &valid_optional_string?/1,
       word_timestamps: &is_boolean/1,
       with_timestamps: &is_boolean/1,
-      beam_size: &positive_integer?/1,
+      beam_size: &positive_u32?/1,
       # `patience` is faster-whisper's beam-search patience; values < 1.0
       # are documented as effectively disabling it.
       patience: &positive_number?/1,
@@ -450,15 +450,15 @@ defmodule WhisperCt2 do
       # `repetition_penalty` < 1.0 amplifies repetition; documented values
       # are >= 1.0 (1.0 = neutral). Reject < 1.0 at the boundary.
       repetition_penalty: &repetition_penalty?/1,
-      no_repeat_ngram_size: &non_neg_integer?/1,
+      no_repeat_ngram_size: &non_neg_u32?/1,
       # Negative temperatures are nonsensical; 0.0 = greedy.
       sampling_temperature: &non_neg_number?/1,
-      sampling_topk: &positive_integer?/1,
+      sampling_topk: &positive_u32?/1,
       suppress_blank: &is_boolean/1,
-      max_length: &positive_integer?/1,
-      num_hypotheses: &positive_integer?/1,
-      max_initial_timestamp_index: &non_neg_integer?/1,
-      suppress_tokens: &list_of_integers?/1
+      max_length: &positive_u32?/1,
+      num_hypotheses: &positive_u32?/1,
+      max_initial_timestamp_index: &non_neg_u32?/1,
+      suppress_tokens: &list_of_i32?/1
     }
   end
 
@@ -490,18 +490,27 @@ defmodule WhisperCt2 do
   defp valid_optional_string?(value) when is_binary(value), do: String.trim(value) != ""
   defp valid_optional_string?(_), do: false
 
-  defp positive_integer?(v), do: is_integer(v) and v > 0
-  defp non_neg_integer?(v), do: is_integer(v) and v >= 0
+  # The NIF decodes integer options into fixed-width Rust types (`u32` /
+  # `i32`); Rustler raises ArgumentError for out-of-range values instead
+  # of returning {:error, _}, so the never-raises contract depends on
+  # range checks happening here.
+  @u32_max 4_294_967_295
+  @i32_min -2_147_483_648
+  @i32_max 2_147_483_647
+
+  defp positive_u32?(v), do: is_integer(v) and v > 0 and v <= @u32_max
+  defp non_neg_u32?(v), do: is_integer(v) and v >= 0 and v <= @u32_max
+  defp i32?(v), do: is_integer(v) and v >= @i32_min and v <= @i32_max
   defp number?(v), do: is_integer(v) or is_float(v)
   defp positive_number?(v), do: number?(v) and v > 0
   defp non_neg_number?(v), do: number?(v) and v >= 0
   defp repetition_penalty?(v), do: number?(v) and v >= 1
 
-  defp list_of_integers?(v) when is_list(v), do: Enum.all?(v, &is_integer/1)
-  defp list_of_integers?(_), do: false
+  defp list_of_i32?(v) when is_list(v), do: Enum.all?(v, &i32?/1)
+  defp list_of_i32?(_), do: false
 
-  defp non_empty_list_of_non_neg_integers?([_ | _] = v),
-    do: Enum.all?(v, &non_neg_integer?/1)
+  defp non_empty_list_of_device_indices?([_ | _] = v),
+    do: Enum.all?(v, &(is_integer(&1) and &1 >= 0 and &1 <= @i32_max))
 
-  defp non_empty_list_of_non_neg_integers?(_), do: false
+  defp non_empty_list_of_device_indices?(_), do: false
 end

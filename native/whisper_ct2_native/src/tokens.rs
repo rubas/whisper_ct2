@@ -11,8 +11,6 @@ pub(crate) struct SpecialTokens {
     pub(crate) sot: u32,
     /// `<|transcribe|>`
     pub(crate) transcribe: u32,
-    /// `<|notimestamps|>`
-    pub(crate) no_timestamps: u32,
     /// `<|0.00|>` — base of the 1501 timestamp-token range. Any token ID
     /// `>= timestamp_begin` is a timestamp; its value is
     /// `(id - timestamp_begin) * 0.02` seconds.
@@ -34,7 +32,6 @@ impl SpecialTokens {
         Ok(Self {
             sot: lookup(inner, SOT)?,
             transcribe: lookup(inner, TRANSCRIBE)?,
-            no_timestamps,
             timestamp_begin: no_timestamps + 1,
         })
     }
@@ -133,32 +130,38 @@ pub(crate) struct SubSegment {
 }
 
 /// Parses a generated chunk's token IDs into `<|t_start|> text <|t_end|>`
-/// sub-segments. Token IDs `>= timestamp_begin` are treated as timestamps;
-/// anything before the first timestamp pair is discarded as preamble.
+/// sub-segments. Token IDs `>= timestamp_begin` are treated as timestamps.
+///
+/// Text with no opening timestamp is kept, never dropped — faster-whisper
+/// keeps it too, and silent text loss is how multi-second turns turned
+/// into empty transcripts. Such a run becomes its own sub-segment
+/// spanning from the previous sub-segment's end (or 0) to the next
+/// timestamp. The shapes that produce it:
+///
+/// - **No timestamps at all**: the prompt asked for `<|notimestamps|>`,
+///   or the fine-tune ignored the timestamp instruction. The whole token
+///   stream spans `[0, content_duration_s)`.
+/// - **Text before the first timestamp**: a `:prefix` echo, or a
+///   fine-tune opening with text. Spans `[0, first_timestamp]`.
+/// - **Text between a closing and the next opening timestamp**:
+///   alternating lone timestamps (`ts text ts text ts`) from fine-tunes
+///   that never double the boundary token.
 ///
 /// `content_duration_s` is the wall-clock length of the real audio inside
 /// this chunk's window (≤ 30 s; the final chunk of an audio is usually
-/// shorter — faster-whisper's `content_frames - seek` bound). It is used
-/// as the fallback `end_in_chunk` in two situations:
-///
-/// 1. **Unclosed pair**: the model emitted `<|t_start|> text [EOT]` with
-///    no closing timestamp. Some fine-tunes (notably notebotIE Swiss-German)
-///    only reliably emit the opening timestamp.
-/// 2. **No timestamps at all**: the prompt asked for `<|notimestamps|>`,
-///    or the fine-tune ignored the timestamp instruction and emitted
-///    plain text. The whole token stream becomes one sub-segment
-///    spanning `[0, content_duration_s)`.
-///
-/// Faster-whisper handles both cases the same way; dropping the text
-/// silently is how multi-second turns turned into empty transcripts.
+/// shorter — faster-whisper's `content_frames - seek` bound). It is the
+/// fallback `end_in_chunk` whenever no closing timestamp exists,
+/// including the **unclosed pair** case: the model emitted
+/// `<|t_start|> text [EOT]` with no closing timestamp. Some fine-tunes
+/// (notably notebotIE Swiss-German) only reliably emit the opening
+/// timestamp.
 pub(crate) fn split_sub_segments(
     token_ids: &[u32],
     timestamp_begin: u32,
     content_duration_s: f32,
 ) -> Vec<SubSegment> {
-    let mut out = Vec::new();
+    let mut out: Vec<SubSegment> = Vec::new();
     let mut i = 0;
-    let mut saw_first_timestamp = false;
 
     while i < token_ids.len() {
         let preamble_start = i;
@@ -167,22 +170,27 @@ pub(crate) fn split_sub_segments(
             i += 1;
         }
 
-        if i >= token_ids.len() {
-            // No timestamps in this entire chunk. Flush every token as
-            // one sub-segment covering the whole chunk window — without
-            // this, `<|notimestamps|>` mode (or any fine-tune that just
-            // refuses to emit timestamps) would lose all of its output.
-            if !saw_first_timestamp && preamble_start < token_ids.len() {
-                out.push(SubSegment {
-                    text_token_ids: token_ids[preamble_start..].to_vec(),
-                    start_in_chunk: 0.0,
-                    end_in_chunk: content_duration_s,
-                });
+        if preamble_start < i {
+            // Text with no opening timestamp: span it from the previous
+            // sub-segment's end to the next timestamp (or the chunk's
+            // real audio end), clamped so the segment cannot invert.
+            let prev_end_s = out.last().map_or(0.0, |s| s.end_in_chunk);
+            let end_in_chunk = if i < token_ids.len() {
+                timestamp_seconds(token_ids[i], timestamp_begin).min(content_duration_s)
+            } else {
+                content_duration_s
             }
-            break;
+            .max(prev_end_s);
+            out.push(SubSegment {
+                text_token_ids: token_ids[preamble_start..i].to_vec(),
+                start_in_chunk: prev_end_s,
+                end_in_chunk,
+            });
+            if i >= token_ids.len() {
+                break;
+            }
         }
 
-        saw_first_timestamp = true;
         let start_id = token_ids[i];
         let text_start = i + 1;
         i += 1;
@@ -256,12 +264,60 @@ mod tests {
     }
 
     #[test]
-    fn split_sub_segments_discards_preamble_before_first_timestamp() {
-        let out = split_sub_segments(&[10, 20, ts(0), 100, 101, ts(100)], BEGIN, CHUNK_S);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].text_token_ids, vec![100, 101]);
+    fn split_sub_segments_keeps_preamble_before_first_timestamp() {
+        // faster-whisper keeps text preceding the first timestamp (its
+        // slices run from index 0); dropping it silently loses transcript
+        // content on `:prefix` echoes and misbehaving fine-tunes. The
+        // preamble becomes its own sub-segment spanning [0, first ts].
+        let out = split_sub_segments(&[10, 20, ts(50), 100, 101, ts(100)], BEGIN, CHUNK_S);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].text_token_ids, vec![10, 20]);
         assert!((out[0].start_in_chunk - 0.0).abs() < 1e-6);
-        assert!((out[0].end_in_chunk - 2.0).abs() < 1e-6);
+        assert!((out[0].end_in_chunk - 1.0).abs() < 1e-6);
+        assert_eq!(out[1].text_token_ids, vec![100, 101]);
+        assert!((out[1].start_in_chunk - 1.0).abs() < 1e-6);
+        assert!((out[1].end_in_chunk - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn split_sub_segments_preamble_before_zero_timestamp_is_zero_width() {
+        // A first timestamp of <|0.00|> leaves the preamble no time to
+        // span — the text still survives as a zero-width sub-segment.
+        let out = split_sub_segments(&[10, ts(0), 100, ts(100)], BEGIN, CHUNK_S);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].text_token_ids, vec![10]);
+        assert!((out[0].start_in_chunk - 0.0).abs() < 1e-6);
+        assert!((out[0].end_in_chunk - 0.0).abs() < 1e-6);
+        assert_eq!(out[1].text_token_ids, vec![100]);
+    }
+
+    #[test]
+    fn split_sub_segments_keeps_text_between_lone_timestamps() {
+        // Alternating lone timestamps (`ts text ts text ts`) from a
+        // fine-tune that never doubles the boundary token: the text after
+        // a closing timestamp used to be discarded as preamble. It must
+        // survive, spanning the gap between the surrounding timestamps.
+        let out = split_sub_segments(&[ts(0), 100, ts(50), 200, ts(150)], BEGIN, CHUNK_S);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].text_token_ids, vec![100]);
+        assert!((out[0].start_in_chunk - 0.0).abs() < 1e-6);
+        assert!((out[0].end_in_chunk - 1.0).abs() < 1e-6);
+        assert_eq!(out[1].text_token_ids, vec![200]);
+        assert!((out[1].start_in_chunk - 1.0).abs() < 1e-6);
+        assert!((out[1].end_in_chunk - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn split_sub_segments_keeps_trailing_text_after_lone_closing_timestamp() {
+        // `ts text ts text [EOT]`: the tail text has neither an opening
+        // nor a closing timestamp and falls back to the chunk's real
+        // audio end.
+        let out = split_sub_segments(&[ts(0), 100, ts(50), 200], BEGIN, CHUNK_S);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].text_token_ids, vec![100]);
+        assert_eq!(out[1].text_token_ids, vec![200]);
+        assert!((out[1].start_in_chunk - 1.0).abs() < 1e-6);
+        assert!((out[1].end_in_chunk - CHUNK_S).abs() < 1e-6);
     }
 
     #[test]

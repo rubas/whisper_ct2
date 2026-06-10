@@ -27,6 +27,26 @@
 - `WhisperCt2.load_model/2` fails at load when the tokenizer lacks
   `<|startofprev|>`, instead of degrading at inference time once
   `:initial_prompt` is used. (#31)
+- The word-timestamp alignment prompt no longer carries an explicit
+  `<|notimestamps|>` — CTranslate2 appends it internally, so the decoder
+  used to see the token doubled, perturbing the cross-attention word
+  timings derive from relative to faster-whisper. (#25)
+- Text generated without an opening timestamp — a `:prefix` echo, a
+  fine-tune opening with text, or text between lone timestamps — is kept
+  as its own segment instead of silently discarded. (#26)
+- Log-mel normalisation floors against the whole audio's maximum, as
+  faster-whisper does, instead of per 30 s window; a near-silent window
+  of a longer audio is no longer normalised against its own max. (#27)
+- Reflect padding for audio shorter than 200 samples reads the
+  zero-padded region like the reference instead of duplicating the last
+  sample into the entire leading pad. (#28)
+- `WhisperCt2.load_model/2` validates `preprocessor_config.json`: a zero
+  numeric field or a mis-shaped `mel_filters` matrix fails as
+  `:load_error` naming the offending field, instead of an opaque
+  `:nif_panic` at the first transcribe. (#29)
+- Integer options that overflow the NIF's fixed-width types (`u32` /
+  `i32`) are rejected as `:invalid_request` instead of raising
+  `ArgumentError` at the NIF boundary. (#30)
 
 ## 0.5.0 - 2026-05-20
 

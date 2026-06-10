@@ -2,6 +2,7 @@
   "generator": "faster-whisper FeatureExtractor",
   "sampling_rate": 16000,
   "audio_samples": 480000,
+  "n_windows": 1,
   "mel_shape": [
     80,
     3000

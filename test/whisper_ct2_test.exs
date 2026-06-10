@@ -135,6 +135,23 @@ defmodule WhisperCt2Test do
                WhisperCt2.load_model("/tmp", num_threads_per_replica: -1)
     end
 
+    test "rejects load options that overflow the NIF's fixed-width types" do
+      # Same never-raises contract as the transcribe options:
+      # `num_threads_per_replica` decodes as u32, the rest as i32.
+      for opts <- [
+            [num_threads_per_replica: 4_294_967_296],
+            [max_queued_batches: 2_147_483_648],
+            [cpu_core_offset: -2_147_483_649],
+            [device_indices: [2_147_483_648]]
+          ] do
+        assert {:error, %Error{reason: :invalid_request, message: msg}} =
+                 WhisperCt2.load_model("/tmp", opts)
+
+        [{key, _} | _] = opts
+        assert msg =~ Atom.to_string(key)
+      end
+    end
+
     test "accepts max_queued_batches and cpu_core_offset" do
       assert {:error, %Error{reason: reason}} =
                WhisperCt2.load_model("/no/such/dir",
@@ -162,6 +179,29 @@ defmodule WhisperCt2Test do
     test "rejects non-integer suppress_tokens entries" do
       assert {:error, %Error{reason: :invalid_request}} =
                WhisperCt2.transcribe(fake_model(), {:pcm_f32, <<>>}, suppress_tokens: [1, "x"])
+    end
+
+    test "rejects integers that overflow the NIF's fixed-width types" do
+      # The NIF decodes these into u32 (`beam_size`, ...) and [i32]
+      # (`suppress_tokens`). Rustler raises ArgumentError for
+      # out-of-range values, which would break the never-raises
+      # contract, so validation must reject them with {:error, _}.
+      for opts <- [
+            [beam_size: 4_294_967_296],
+            [no_repeat_ngram_size: 4_294_967_296],
+            [sampling_topk: 4_294_967_296],
+            [max_length: 4_294_967_296],
+            [num_hypotheses: 4_294_967_296],
+            [max_initial_timestamp_index: 4_294_967_296],
+            [suppress_tokens: [2_147_483_648]],
+            [suppress_tokens: [-2_147_483_649]]
+          ] do
+        assert {:error, %Error{reason: :invalid_request, message: msg}} =
+                 WhisperCt2.transcribe(fake_model(), {:pcm_f32, <<0, 0, 0, 0>>}, opts)
+
+        [{key, _} | _] = opts
+        assert msg =~ Atom.to_string(key)
+      end
     end
 
     test "rejects empty language string" do
