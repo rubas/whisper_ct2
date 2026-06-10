@@ -34,7 +34,8 @@ impl std::error::Error for Categorized {}
 
 /// User input was rejected at a NIF-internal boundary (bad language code,
 /// no mel chunks produced, mixed-language batch with `word_timestamps`,
-/// over-large input buffer). Surfaces as `:invalid_request` in Elixir.
+/// over-large input buffer, PCM amplitude overflowing the mel power).
+/// Surfaces as `:invalid_request` in Elixir.
 pub(crate) fn invalid_request(message: impl Into<String>) -> anyhow::Error {
     anyhow::Error::new(Categorized {
         kind: "invalid_request",
@@ -42,8 +43,8 @@ pub(crate) fn invalid_request(message: impl Into<String>) -> anyhow::Error {
     })
 }
 
-/// Internal NIF runtime fault (NaN propagation, unexpected ct2rs state).
-/// Surfaces as `:runtime_error` in Elixir — distinct from
+/// Internal NIF runtime fault (violated internal invariant, unexpected
+/// ct2rs state). Surfaces as `:runtime_error` in Elixir — distinct from
 /// `:inference_error`, which is reserved for CTranslate2-side failures.
 pub(crate) fn runtime_error(message: impl Into<String>) -> anyhow::Error {
     anyhow::Error::new(Categorized {

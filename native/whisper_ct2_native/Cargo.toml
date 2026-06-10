@@ -25,8 +25,9 @@ anyhow = "1.0"
 rustfft = "6.4"
 # `parking_lot::Mutex` avoids `std::sync::Mutex`'s poisoning behaviour
 # (a panic under the lock would otherwise brick the loaded model for the
-# rest of its lifetime). `ct2rs::sys::Whisper` is internally thread-safe;
-# this mutex only serialises our own non-Sync handle.
+# rest of its lifetime). `ct2rs::sys::Whisper` is `Send + Sync`; the mutex
+# deliberately serialises inference per model to bound CTranslate2 memory
+# and thread use. Rationale and cost on `WhisperResource` in `lib.rs`.
 parking_lot = "0.12"
 
 [features]

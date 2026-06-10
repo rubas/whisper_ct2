@@ -17,7 +17,7 @@ use anyhow::{Context, Result, anyhow};
 use ct2rs::sys::{Device, StorageView, Whisper, WhisperOptions};
 use ct2rs::tokenizers::hf;
 
-use crate::align::{ChunkAlignInput, DEFAULT_MEDIAN_FILTER_WIDTH, align_batch};
+use crate::align::{AlignParams, ChunkAlignInput, DEFAULT_MEDIAN_FILTER_WIDTH, align_batch};
 use crate::errors::{invalid_request, runtime_error};
 use crate::preprocessor::Preprocessor;
 use crate::tokens::{
@@ -30,7 +30,44 @@ use crate::tokens::{
 /// pathological caller. 2 GiB ≈ 537 M f32, well past any realistic batch:
 /// at the standard tiny config (80 mel × 3000 frames × 4 B) one chunk is
 /// 960 kB, so 2 GiB tolerates ~2200 chunks ≈ 18 h of audio in one call.
+/// Enforced by [`validate_feature_budget`] from sample counts alone, before
+/// any mel chunk is allocated.
 const MAX_FEATURE_BUFFER_BYTES: usize = 2 * 1024 * 1024 * 1024;
+
+/// Validates the projected flat mel buffer for a batch against
+/// [`MAX_FEATURE_BUFFER_BYTES`] using sample counts alone, so an oversized
+/// batch is rejected before the mel chunks — the very allocation the cap
+/// is sized against — exist. The NIF layer calls this with `byte_len / 4`
+/// per input to reject before even the PCM is decoded. Returns the
+/// projected element count of the flat buffer.
+pub(crate) fn validate_feature_budget(
+    preprocessor: &Preprocessor,
+    sample_lengths: impl IntoIterator<Item = usize>,
+) -> Result<usize> {
+    let n_mels = preprocessor.feature_size;
+    let chunk_length = preprocessor.nb_max_frames;
+    let mut total_chunks: usize = 0;
+    for samples_len in sample_lengths {
+        total_chunks = total_chunks
+            .checked_add(samples_len.div_ceil(preprocessor.n_samples))
+            .ok_or_else(|| invalid_request("batch chunk count overflows usize"))?;
+    }
+    let elements = total_chunks
+        .checked_mul(n_mels)
+        .and_then(|n| n.checked_mul(chunk_length));
+    let bytes = elements.and_then(|n| n.checked_mul(std::mem::size_of::<f32>()));
+    match bytes {
+        Some(b) if b > MAX_FEATURE_BUFFER_BYTES => Err(invalid_request(format!(
+            "batch feature buffer {b} bytes exceeds {MAX_FEATURE_BUFFER_BYTES} byte cap; \
+             split the input into smaller transcribe_batch calls"
+        ))),
+        None => Err(invalid_request(format!(
+            "batch feature buffer size overflows usize \
+             (total_chunks={total_chunks}, n_mels={n_mels}, chunk_length={chunk_length})"
+        ))),
+        Some(_) => Ok(elements.expect("bytes is Some only when elements is")),
+    }
+}
 
 /// Request knobs for one transcribe call (applies to every audio in a batch).
 pub(crate) struct TranscribeRequest {
@@ -115,6 +152,9 @@ pub(crate) fn transcribe_many(
         return Ok(Vec::new());
     }
 
+    let projected_elements =
+        validate_feature_budget(preprocessor, audios.iter().map(|samples| samples.len()))?;
+
     let mut per_audio_chunks: Vec<Vec<ndarray::Array2<f32>>> = Vec::with_capacity(audios.len());
     let mut per_audio_languages: Vec<String> = Vec::with_capacity(audios.len());
     let mut per_audio_duration: Vec<f32> = Vec::with_capacity(audios.len());
@@ -155,42 +195,15 @@ pub(crate) fn transcribe_many(
     let n_mels = preprocessor.feature_size;
     let chunk_length = preprocessor.nb_max_frames;
 
-    // Guard against a pathological caller stacking enough audio that the
-    // flat mel buffer would dwarf the BEAM's address space. The check
-    // also catches usize overflow on the multiplication: if any of the
-    // intermediate `checked_mul`s returns `None`, we treat the request
-    // as oversized.
-    let elements = total_chunks
-        .checked_mul(n_mels)
-        .and_then(|n| n.checked_mul(chunk_length));
-    let bytes = elements.and_then(|n| n.checked_mul(std::mem::size_of::<f32>()));
-    match bytes {
-        Some(b) if b > MAX_FEATURE_BUFFER_BYTES => {
-            return Err(invalid_request(format!(
-                "batch feature buffer {b} bytes exceeds {MAX_FEATURE_BUFFER_BYTES} byte cap; \
-                 split the input into smaller transcribe_batch calls"
-            )));
-        }
-        None => {
-            return Err(invalid_request(format!(
-                "batch feature buffer size overflows usize \
-                 (total_chunks={total_chunks}, n_mels={n_mels}, chunk_length={chunk_length})"
-            )));
-        }
-        _ => {}
-    }
-
-    let mut flat: Vec<f32> = Vec::with_capacity(elements.expect("checked above"));
+    // Finiteness needs no re-check here: the NIF boundary rejects
+    // non-finite PCM and `build_chunks` rejects mel power overflow, so
+    // every value in these chunks is already known finite.
+    let mut flat: Vec<f32> = Vec::with_capacity(projected_elements);
     for chunks in &per_audio_chunks {
         for chunk in chunks {
             let slice = chunk
                 .as_slice()
                 .ok_or_else(|| runtime_error("mel chunk not contiguous"))?;
-            if slice.iter().any(|v| !v.is_finite()) {
-                return Err(runtime_error(
-                    "mel features contain NaN or infinity; check for corrupted PCM input",
-                ));
-            }
             flat.extend_from_slice(slice);
         }
     }
@@ -285,7 +298,11 @@ pub(crate) fn transcribe_many(
                 sub_segments: split_sub_segments(
                     &token_ids_u32,
                     specials.timestamp_begin,
-                    chunk_duration_s,
+                    chunk_content_duration_s(
+                        audios[audio_idx].len(),
+                        within_audio_idx,
+                        preprocessor,
+                    ),
                 ),
                 offset_s: chunk_offset_s,
                 num_frames: encoder_frames_for_chunk(
@@ -301,9 +318,15 @@ pub(crate) fn transcribe_many(
         // sys::Whisper::align takes one start_sequence for the whole batch,
         // so every audio in the batch must share the same SOT block we
         // used at generate time. For multilingual auto-detect this means
-        // every audio's detected language must match.
+        // every audio's detected language must match. `*.en` checkpoints
+        // are pinned to English upstream.
+        let language_token = if multilingual {
+            uniform_align_language(&per_audio_languages)?
+        } else {
+            "<|en|>"
+        };
         let align_start_sequence =
-            build_align_start_sequence(tokenizer, specials, multilingual, &per_audio_languages)?;
+            build_align_start_sequence(tokenizer, specials, multilingual, language_token)?;
 
         let align_inputs: Vec<ChunkAlignInput<'_>> = chunk_state
             .iter()
@@ -318,9 +341,12 @@ pub(crate) fn transcribe_many(
             tokenizer,
             &encoder_output,
             &align_inputs,
-            &align_start_sequence,
-            preprocessor.seconds_per_encoder_frame(),
-            DEFAULT_MEDIAN_FILTER_WIDTH,
+            &AlignParams {
+                start_sequence: &align_start_sequence,
+                language_token,
+                seconds_per_frame: preprocessor.seconds_per_encoder_frame(),
+                median_filter_width: DEFAULT_MEDIAN_FILTER_WIDTH,
+            },
         )?
     } else {
         Vec::new()
@@ -436,22 +462,18 @@ fn detect_language(
 /// Builds the SOT block used by `Whisper::align`, mirroring the prompt
 /// shape `generate` was given so word boundaries land where they were
 /// scored. `*.en` checkpoints get `[sot, no_timestamps]`; multilingual
-/// gets `[sot, lang, transcribe, no_timestamps]`.
-///
-/// Errors out when the batch mixes detected languages: `sys::Whisper::align`
-/// only accepts one start_sequence for the whole batch, so the caller has
-/// to split the work or pin `:language`.
+/// gets `[sot, lang, transcribe, no_timestamps]` for the batch's
+/// (already-validated uniform) language token.
 fn build_align_start_sequence(
     tokenizer: &hf::Tokenizer,
     specials: &SpecialTokens,
     multilingual: bool,
-    per_audio_languages: &[String],
+    language_token: &str,
 ) -> Result<Vec<usize>> {
     if !multilingual {
         return Ok(vec![specials.sot as usize, specials.no_timestamps as usize]);
     }
-    let first = uniform_align_language(per_audio_languages)?;
-    let lang_id = token_id(tokenizer, first)?;
+    let lang_id = token_id(tokenizer, language_token)?;
     Ok(vec![
         specials.sot as usize,
         lang_id as usize,
@@ -477,7 +499,7 @@ fn reject_non_english_on_en_checkpoint(multilingual: bool, lang: &str) -> Result
     Ok(())
 }
 
-/// Pure check used by `build_align_start_sequence`: returns the common
+/// Pure check used by the `word_timestamps` path: returns the common
 /// language token of the batch, or an `invalid_request` error if the
 /// languages disagree. Extracted so the mixed-language guard can be
 /// unit-tested without a loaded tokenizer.
@@ -531,6 +553,21 @@ fn encoder_frames_for_chunk(
         .max(1)
 }
 
+/// Wall-clock seconds of real audio inside chunk `chunk_idx` of a
+/// `samples_len`-sample audio — as opposed to the padded 30 s window.
+/// `split_sub_segments` uses this as its fallback segment end so the tail
+/// chunk of a 35 s audio ends at 35 s, not 60 s (faster-whisper bounds the
+/// same fallback by `content_frames - seek`).
+fn chunk_content_duration_s(
+    samples_len: usize,
+    chunk_idx: usize,
+    preprocessor: &Preprocessor,
+) -> f32 {
+    let start = chunk_idx * preprocessor.n_samples;
+    let remaining = samples_len.saturating_sub(start);
+    remaining.min(preprocessor.n_samples) as f32 / preprocessor.sampling_rate as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -563,6 +600,44 @@ mod tests {
         assert_eq!(ranges[0].clone().collect::<Vec<_>>(), vec![0, 1]);
         assert_eq!(ranges[1].clone().collect::<Vec<_>>(), vec![2, 3, 4, 5, 6]);
         assert_eq!(ranges[2].clone().collect::<Vec<_>>(), vec![7]);
+    }
+
+    #[test]
+    fn validate_feature_budget_pins_the_cap_boundary() {
+        let preprocessor = tiny_preprocessor();
+
+        // One hour of 16 kHz audio = 120 chunks; well under the cap, and
+        // the projected element count must match the flat buffer exactly.
+        assert_eq!(
+            validate_feature_budget(&preprocessor, [16_000 * 3600]).unwrap(),
+            120 * 80 * 3000
+        );
+
+        // One 30 s chunk is 80 * 3000 * 4 B = 960 kB; 2236 chunks sit
+        // just under the 2 GiB cap, 2237 just over. The reject must come
+        // from sample counts alone — before any mel chunk exists.
+        assert!(validate_feature_budget(&preprocessor, vec![480_000_usize; 2236]).is_ok());
+        let err = validate_feature_budget(&preprocessor, vec![480_000_usize; 2237]).unwrap_err();
+        assert_eq!(kind_from_chain(&err), Some("invalid_request"));
+        assert!(format!("{err:#}").contains("exceeds"));
+    }
+
+    #[test]
+    fn chunk_content_duration_uses_real_audio_length() {
+        let preprocessor = tiny_preprocessor();
+
+        // Full first chunk of a 35 s audio covers the whole 30 s window.
+        let full = chunk_content_duration_s(560_000, 0, &preprocessor);
+        assert!((full - 30.0).abs() < 1e-6, "got {full}");
+
+        // The tail chunk holds 5 s of real audio — fallback segment ends
+        // must land at 35 s absolute, not 60 s.
+        let tail = chunk_content_duration_s(560_000, 1, &preprocessor);
+        assert!((tail - 5.0).abs() < 1e-6, "got {tail}");
+
+        // A 3 s clip's only chunk ends at 3 s, not the padded 30 s.
+        let short = chunk_content_duration_s(48_000, 0, &preprocessor);
+        assert!((short - 3.0).abs() < 1e-6, "got {short}");
     }
 
     #[test]

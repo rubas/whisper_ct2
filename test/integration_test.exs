@@ -184,6 +184,12 @@ defmodule WhisperCt2.IntegrationTest do
       |> Enum.zip(golden_n)
       |> Enum.with_index()
       |> Enum.each(fn {{%Word{} = ours, ref}, idx} ->
+        # Text equality guards the word-grouping pipeline (decode, split,
+        # punctuation merge). faster-whisper keeps the leading BPE space;
+        # we trim it, so compare trimmed.
+        assert String.trim(ours.text) == String.trim(ref["text"]),
+               "word #{idx} text drift: ours=#{inspect(ours.text)} ref=#{inspect(ref["text"])}"
+
         diff_start = abs(ours.start - ref["start"])
         diff_end = abs(ours.end - ref["end"])
 
@@ -204,6 +210,57 @@ defmodule WhisperCt2.IntegrationTest do
       |> Path.join("words.json")
       |> File.read!()
       |> JSON.decode!()
+    end
+  end
+
+  describe "PCM sample validation" do
+    # Non-finite samples used to be flushed to the log-mel floor and
+    # transcribe as silence with {:ok, ...}; they must fail loudly at the
+    # NIF boundary instead (`decode_pcm_f32` in `lib.rs`).
+
+    test "rejects PCM containing NaN or infinity", %{model: model} do
+      # f32 LE bit patterns: NaN = 0x7FC00000, +Inf = 0x7F800000.
+      for bad <- [<<0, 0, 192, 127>>, <<0, 0, 128, 127>>] do
+        pcm = silent_pcm(160) <> bad <> silent_pcm(160)
+
+        assert {:error, %WhisperCt2.Error{reason: :invalid_request, message: msg}} =
+                 WhisperCt2.transcribe(model, {:pcm_f32, pcm})
+
+        assert msg =~ "non-finite"
+      end
+    end
+
+    test "rejects PCM whose amplitude overflows the mel power", %{model: model} do
+      # One second of f32::MAX (0x7F7FFFFF LE). Finite at the boundary,
+      # but the FFT power overflows f32 — caught in `build_chunks` before
+      # normalisation can launder the overflow into the silence floor.
+      pcm = :binary.copy(<<255, 255, 127, 127>>, 16_000)
+
+      assert {:error, %WhisperCt2.Error{reason: :invalid_request, message: msg}} =
+               WhisperCt2.transcribe(model, {:pcm_f32, pcm})
+
+      assert msg =~ "amplitude"
+    end
+  end
+
+  describe "segment ends stay within the audio" do
+    test "with_timestamps: false bounds the fallback segment to the real audio length",
+         %{model: model, audio_pcm: full_pcm} do
+      # `<|notimestamps|>` mode turns each chunk's text into one segment
+      # whose end falls back to the chunk's real audio length. A 3 s clip
+      # used to report a segment ending at the padded 30 s window.
+      three_s_bytes = 3 * 16_000 * 4
+      <<short::binary-size(^three_s_bytes), _::binary>> = full_pcm
+
+      assert {:ok, %Transcription{segments: segs, duration_s: dur}} =
+               WhisperCt2.transcribe(model, {:pcm_f32, short},
+                 language: "en",
+                 with_timestamps: false
+               )
+
+      assert dur < 3.5
+      refute Enum.empty?(segs)
+      assert Enum.all?(segs, &(&1.end <= dur + 1.0e-3))
     end
   end
 

@@ -80,9 +80,13 @@ impl From<anyhow::Error> for NativeError {
 /// need to feed `ct2rs::sys::Whisper` (mel filterbank, tokenizer, special
 /// token IDs).
 ///
-/// `sys::Whisper` is serialised through a [`Mutex`] for inference. The
-/// CTranslate2 engine itself is thread-safe; load multiple models if you
-/// need parallel inference.
+/// `sys::Whisper` is `Send + Sync` (ct2rs asserts both; the CTranslate2
+/// replica pool is internally thread-safe), so the [`Mutex`] is not needed
+/// for soundness — it deliberately serialises inference to one call per
+/// model, bounding CTranslate2 memory and thread use. The cost: every
+/// concurrent caller parks a dirty scheduler thread until the running
+/// batch finishes, shrinking the dirty pool for the whole VM. Load one
+/// model per desired level of parallelism.
 struct WhisperResource {
     whisper: Mutex<Whisper>,
     tokenizer: hf::Tokenizer,
@@ -319,7 +323,11 @@ fn resolve_device(requested: Option<&str>) -> Result<Device, NativeError> {
 }
 
 /// Reports `CTranslate2` device support for this build.
-#[rustler::nif]
+///
+/// DirtyCpu because the first `get_device_count(Device::CUDA)` in the
+/// process initialises the NVIDIA driver on `cuda`/`cuda-dynamic` builds —
+/// tens to hundreds of milliseconds, far past the normal-scheduler budget.
+#[rustler::nif(schedule = "DirtyCpu")]
 fn nif_available_devices(env: Env<'_>) -> Term<'_> {
     let result = run_with_panic_protection(|| {
         let cuda = if CUDA_SUPPORTED {
@@ -454,10 +462,22 @@ fn decode_pcm_f32(bytes: &[u8]) -> Result<Vec<f32>, NativeError> {
         .with_detail("byte_length", bytes.len().to_string()));
     }
 
-    let samples = bytes
+    let samples: Vec<f32> = bytes
         .chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
+
+    // NaN survives every downstream guard: the log-mel normalisation
+    // flushes it to the mel floor, so corrupted audio would transcribe
+    // as silence with an `{:ok, ...}` result. Reject it here, at the
+    // only place the raw samples are all in hand.
+    if let Some(index) = samples.iter().position(|v| !v.is_finite()) {
+        return Err(NativeError::new(
+            "invalid_request",
+            "PCM contains a non-finite sample (NaN or infinity); fix the upstream decoder",
+        )
+        .with_detail("sample_index", index.to_string()));
+    }
 
     Ok(samples)
 }
@@ -536,6 +556,9 @@ fn nif_transcribe<'a>(
 ) -> Term<'a> {
     let bytes = samples_bin.as_slice();
     let result = run_with_panic_protection(|| {
+        // Budget first: reject an oversized input before `decode_pcm_f32`
+        // copies it out of the BEAM binary.
+        transcribe::validate_feature_budget(&model.preprocessor, [bytes.len() / 4])?;
         let samples = decode_pcm_f32(bytes)?;
         let request = build_request(&opts);
 
@@ -570,6 +593,13 @@ fn nif_transcribe_batch<'a>(
 ) -> Term<'a> {
     let bytes_per_audio: Vec<&[u8]> = samples_bins.iter().map(Binary::as_slice).collect();
     let result = run_with_panic_protection(|| {
+        // Budget first: a batch tripping the 2 GiB mel cap carries roughly
+        // twice that in PCM, so reject before `decode_pcm_f32` duplicates
+        // every binary into a `Vec<f32>`.
+        transcribe::validate_feature_budget(
+            &model.preprocessor,
+            bytes_per_audio.iter().map(|bytes| bytes.len() / 4),
+        )?;
         let decoded: Vec<Vec<f32>> = bytes_per_audio
             .iter()
             .map(|b| decode_pcm_f32(b))
@@ -625,6 +655,25 @@ mod tests {
             err.details.get("byte_length").map(String::as_str),
             Some("3")
         );
+    }
+
+    #[test]
+    fn decode_pcm_f32_rejects_non_finite_samples() {
+        // NaN would otherwise be flushed to the mel floor by
+        // `normalise_log_mel` and transcribe as silence with {:ok, ...};
+        // this boundary is the only place it can fail loudly.
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut bytes = Vec::new();
+            for v in [0.5_f32, bad, 0.25] {
+                bytes.extend_from_slice(&v.to_le_bytes());
+            }
+            let err = decode_pcm_f32(&bytes).unwrap_err();
+            assert_eq!(err.r#type, "invalid_request");
+            assert_eq!(
+                err.details.get("sample_index").map(String::as_str),
+                Some("1")
+            );
+        }
     }
 
     #[test]
