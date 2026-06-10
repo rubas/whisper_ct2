@@ -1,7 +1,7 @@
 defmodule WhisperCt2.MixProject do
   use Mix.Project
 
-  @version "0.5.0"
+  @version "0.6.0"
   @source_url "https://github.com/rubas/whisper_ct2"
 
   @spec project() :: keyword()

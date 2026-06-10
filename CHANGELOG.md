@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 - 2026-06-10
+
+Fixes every finding from the 2026-06 multi-agent Rust/STT NIF audit
+(label `stt-rust-audit`): silent text loss, faster-whisper parity gaps
+in the mel preprocessor and word alignment, and late or raising error
+paths. Word timings now track the faster-whisper reference within one
+encoder frame (20 ms).
 
 ### Changed
 

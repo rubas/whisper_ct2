@@ -14,7 +14,7 @@ quantisation and CUDA / oneDNN / MKL / Accelerate backends.
 
 ```elixir
 def deps do
-  [{:whisper_ct2, "~> 0.5"}]
+  [{:whisper_ct2, "~> 0.6"}]
 end
 ```
 
