@@ -3,7 +3,7 @@ description: "System packages, Task, Elixir/OTP, Rust toolchain, sccache, and th
 
 inputs:
   elixir-version:
-    description: "Elixir version (e.g. 1.20.0-rc.5)"
+    description: "Elixir version (e.g. 1.20.0)"
     required: true
   otp-version:
     description: "OTP version (e.g. 29.0)"
