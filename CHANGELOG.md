@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Changed
+
+- ct2rs 0.9.18 → 0.9.19, bumping the vendored CTranslate2 from 4.7.1 to
+  4.7.2. (#34)
+- The daily security workflow audits the NIF crate's Rust dependency
+  tree with cargo-audit, alongside the existing `mix deps.audit`. (#34)
+
 ### Fixed
 
 - Word text from `:word_timestamps` is decoded through the tokenizer's

@@ -482,7 +482,9 @@ fn decode_pcm_f32(bytes: &[u8]) -> Result<Vec<f32>, NativeError> {
     Ok(samples)
 }
 
-// Verified 2026-05: every field exposed in `TranscribeOpts` whose ct2rs
+// Verified 2026-05 (ct2rs 0.9.18; still exact for 0.9.19, whose only
+// change is the vendored CTranslate2 4.7.1 -> 4.7.2 bump with no Rust-side
+// diff): every field exposed in `TranscribeOpts` whose ct2rs
 // default we inherit (`beam_size=5`, `patience=1.0`, `length_penalty=1.0`,
 // `repetition_penalty=1.0`, `no_repeat_ngram_size=0`, `max_length=448`,
 // `sampling_topk=1` (greedy), `sampling_temperature=1.0`,

@@ -9,6 +9,8 @@ on:
     paths:
       - "mix.exs"
       - "mix.lock"
+      - "native/whisper_ct2_native/Cargo.toml"
+      - "native/whisper_ct2_native/Cargo.lock"
   workflow_dispatch:
 
 permissions: {}
@@ -45,6 +47,21 @@ jobs:
 
       - name: Audit dependencies
         run: MIX_ENV=test mix deps.audit
+
+      - name: Install cargo-audit
+        if: ${{ !cancelled() }}
+        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2.81.9
+        with:
+          tool: cargo-audit
+
+      - name: Audit Rust dependencies
+        # Runs even when the Hex audit failed so one run reports both
+        # ecosystems. The NIF crate carries the largest native surface
+        # (vendored CTranslate2 + its third_party C++); RustSec advisories
+        # against its Rust dependency tree must fail this workflow too.
+        if: ${{ !cancelled() }}
+        working-directory: native/whisper_ct2_native
+        run: cargo audit
 
       - name: Report audit failure
         if: failure()
