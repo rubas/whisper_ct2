@@ -91,11 +91,12 @@ pub(crate) struct ChunkAlignInput<'a> {
 
 /// Batch-level alignment parameters shared by every chunk.
 pub(crate) struct AlignParams<'a> {
-    /// SOT block mirroring the prompt used at `generate` time:
-    /// `[sot, no_timestamps]` for `*.en` checkpoints, `[sot, lang,
-    /// transcribe, no_timestamps]` for multilingual. `sys::Whisper::align`
-    /// takes a single start sequence for the whole batch, so all chunks
-    /// must have been generated against the same one.
+    /// SOT block mirroring the prompt used at `generate` time: `[sot]`
+    /// for `*.en` checkpoints, `[sot, lang, transcribe]` for multilingual
+    /// — without `<|notimestamps|>`, which CTranslate2's `align` appends
+    /// internally. `sys::Whisper::align` takes a single start sequence
+    /// for the whole batch, so all chunks must have been generated
+    /// against the same one.
     pub(crate) start_sequence: &'a [usize],
     /// The batch's resolved language token (`"<|en|>"`, `"<|de|>"`, ...);
     /// decides whether words split on spaces or on codepoint runs.

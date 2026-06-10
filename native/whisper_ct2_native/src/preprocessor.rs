@@ -32,6 +32,7 @@ const PREPROCESSOR_CONFIG_FILE: &str = "preprocessor_config.json";
 
 /// Parsed `preprocessor_config.json` plus the (possibly synthesised) mel
 /// filterbank used to produce log-mel features.
+#[derive(Debug)]
 pub(crate) struct Preprocessor {
     pub(crate) feature_size: usize,
     pub(crate) hop_length: usize,
@@ -60,10 +61,42 @@ impl Preprocessor {
         let aux: PreprocessorJson = serde_json::from_reader(BufReader::new(file))
             .with_context(|| format!("parsing {}", path.display()))?;
 
+        // A corrupt converted-model directory must fail here, at load,
+        // with the offending field named — not as an opaque panic
+        // (divide by zero, out-of-bounds filterbank index) at the first
+        // transcribe.
+        for (field, value) in [
+            ("feature_size", aux.feature_size),
+            ("hop_length", aux.hop_length),
+            ("n_fft", aux.n_fft),
+            ("n_samples", aux.n_samples),
+            ("nb_max_frames", aux.nb_max_frames),
+            ("sampling_rate", aux.sampling_rate),
+        ] {
+            if value == 0 {
+                return Err(anyhow!("{field} must be positive in {}", path.display()));
+            }
+        }
+
         let mel_filters = if let Some(rows) = aux.mel_filters {
             let n_rows = rows.len();
             let n_cols = rows.first().map_or(0, Vec::len);
-            Array2::from_shape_vec((n_rows, n_cols), rows.into_iter().flatten().collect())?
+            let expected_rows = aux.feature_size;
+            let expected_cols = aux.n_fft / 2 + 1;
+            if (n_rows, n_cols) != (expected_rows, expected_cols) {
+                return Err(anyhow!(
+                    "mel_filters shape [{n_rows}, {n_cols}] does not match \
+                     [feature_size, n_fft / 2 + 1] = [{expected_rows}, {expected_cols}] in {}",
+                    path.display()
+                ));
+            }
+            Array2::from_shape_vec((n_rows, n_cols), rows.into_iter().flatten().collect())
+                .with_context(|| {
+                    format!(
+                        "mel_filters rows have inconsistent lengths in {}",
+                        path.display()
+                    )
+                })?
         } else {
             mel(
                 aux.sampling_rate as f64,
@@ -91,15 +124,22 @@ impl Preprocessor {
     /// `[feature_size, nb_max_frames]` log-mel array per window.
     ///
     /// Numerically matches `faster_whisper.FeatureExtractor` (librosa STFT
-    /// with `center=True` and reflect padding) so the golden fixture in
-    /// `test/fixtures/mel_golden/` passes element-wise. Each 30 s chunk
+    /// with `center=True` and reflect padding) so the golden fixtures in
+    /// `test/fixtures/mel_golden*/` pass element-wise. Each 30 s chunk
     /// is padded with `n_fft/2` reflected samples on each side, framed at
     /// `hop_length` with a Hann window, FFT'd, squared, mel-projected, and
     /// normalised with Whisper's
-    /// `(max(log10(max(x,1e-10)), max_log-8) + 4)/4` curve.
+    /// `(max(log10(max(x,1e-10)), max_log-8) + 4)/4` curve, where
+    /// `max_log` is the maximum over **all** chunks of the audio — the
+    /// reference computes `log_spec.max()` once over the whole signal, so
+    /// a near-silent window is floored against the loudest window of the
+    /// audio rather than its own.
     ///
-    /// Chunks are processed independently — no STFT state leaks between
-    /// the 30 s windows.
+    /// Known deviation: chunks are STFT'd independently, so the first and
+    /// last ~`n_fft / (2 * hop_length)` frames of interior chunks use
+    /// reflected instead of real neighbouring samples, while the
+    /// reference runs one continuous STFT and slices. The golden tests
+    /// trim those edge frames.
     pub(crate) fn build_chunks(&self, samples: &[f32]) -> Result<Vec<Array2<f32>>> {
         if samples.is_empty() {
             return Err(anyhow!("samples buffer is empty"));
@@ -113,23 +153,9 @@ impl Preprocessor {
         let n_freq = self.n_fft / 2 + 1;
 
         let mut out = Vec::new();
+        let mut max_log = f32::NEG_INFINITY;
         for chunk in samples.chunks(self.n_samples) {
-            // Pad chunk to n_samples so every output gets the full
-            // nb_max_frames; faster-whisper zero-pads the tail the same way.
-            let mut padded = vec![0.0_f32; self.n_samples + 2 * pad];
-            for i in 0..pad {
-                let src = (pad - i).min(chunk.len().saturating_sub(1));
-                padded[i] = chunk[src];
-            }
-            padded[pad..pad + chunk.len()].copy_from_slice(chunk);
-            // Tail past `chunk.len()` is already zero; reflect the last
-            // samples into the trailing pad area for parity with
-            // `np.pad(..., mode='reflect')` on a zero-padded array.
-            let body_end = pad + self.n_samples;
-            for i in 0..pad {
-                let src = body_end.saturating_sub(2 + i);
-                padded[body_end + i] = padded[src];
-            }
+            let padded = reflect_pad_chunk(chunk, self.n_samples, pad);
 
             let mut mel_chunk = Array2::<f32>::zeros((self.feature_size, self.nb_max_frames));
             for f in 0..self.nb_max_frames {
@@ -157,8 +183,8 @@ impl Preprocessor {
             // Finite PCM (enforced at the NIF boundary) still overflows
             // the f32 mel power once amplitudes get far outside Whisper's
             // [-1.0, 1.0] contract. This is the last point corruption is
-            // detectable: `normalise_log_mel` launders NaN into the mel
-            // floor and would let garbage transcribe as silence.
+            // detectable: `log_mel` launders NaN into the mel floor and
+            // would let garbage transcribe as silence.
             if mel_chunk.iter().any(|v| !v.is_finite()) {
                 return Err(invalid_request(
                     "mel power overflowed f32; PCM amplitude is far outside \
@@ -166,8 +192,14 @@ impl Preprocessor {
                 ));
             }
 
-            normalise_log_mel(&mut mel_chunk);
+            max_log = max_log.max(log_mel(&mut mel_chunk));
             out.push(mel_chunk);
+        }
+
+        // The clamp floor is `whole-audio max - 8`, so scaling has to
+        // wait until every chunk's max is in.
+        for mel_chunk in &mut out {
+            scale_log_mel(mel_chunk, max_log);
         }
 
         Ok(out)
@@ -185,6 +217,28 @@ impl Preprocessor {
     }
 }
 
+/// Pads one chunk for the centred STFT: `n_fft/2` reflected samples on
+/// each side of a chunk zero-extended to `n_samples`, so every output
+/// gets the full `nb_max_frames` — faster-whisper zero-pads the tail the
+/// same way. Matches `np.pad(..., mode='reflect')` on the zero-padded
+/// array: a left reflection that reaches past the chunk's data reads the
+/// zero region (relevant only for chunks of `<= pad` samples), and the
+/// trailing pad reflects whatever sits at the body's end, zeros included.
+fn reflect_pad_chunk(chunk: &[f32], n_samples: usize, pad: usize) -> Vec<f32> {
+    let mut padded = vec![0.0_f32; n_samples + 2 * pad];
+    for i in 0..pad {
+        let src = pad - i;
+        padded[i] = if src < chunk.len() { chunk[src] } else { 0.0 };
+    }
+    padded[pad..pad + chunk.len()].copy_from_slice(chunk);
+    let body_end = pad + n_samples;
+    for i in 0..pad {
+        let src = body_end.saturating_sub(2 + i);
+        padded[body_end + i] = padded[src];
+    }
+    padded
+}
+
 /// Periodic Hann window of length `n` (numpy's `np.hanning`-style endpoints).
 fn hann_window(n: usize) -> Vec<f32> {
     (0..n)
@@ -192,9 +246,11 @@ fn hann_window(n: usize) -> Vec<f32> {
         .collect()
 }
 
-/// Faster-whisper / OpenAI Whisper log-mel normalisation:
-/// `clip(log10(max(x, 1e-10)), max - 8, ...)` then `(x + 4) / 4`.
-fn normalise_log_mel(mel: &mut Array2<f32>) {
+/// First half of the Whisper log-mel normalisation: `log10(max(x, 1e-10))`
+/// in place. Returns the chunk's max log value; `build_chunks` folds the
+/// maxes of every chunk into the whole-audio max that [`scale_log_mel`]
+/// floors against.
+fn log_mel(mel: &mut Array2<f32>) -> f32 {
     let mut max_log = f32::NEG_INFINITY;
     for v in mel.iter_mut() {
         let log = v.max(1e-10).log10();
@@ -203,6 +259,13 @@ fn normalise_log_mel(mel: &mut Array2<f32>) {
             max_log = log;
         }
     }
+    max_log
+}
+
+/// Second half: `(max(x, max_log - 8) + 4) / 4`, with `max_log` the max
+/// over the whole audio (faster-whisper / OpenAI Whisper compute
+/// `log_spec.max()` globally, not per 30 s window).
+fn scale_log_mel(mel: &mut Array2<f32>, max_log: f32) {
     let floor = max_log - 8.0;
     for v in mel.iter_mut() {
         *v = (v.max(floor) + 4.0) / 4.0;
@@ -214,16 +277,16 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    /// Workspace-relative path to the checked-in golden mel fixture.
+    /// Workspace-relative path to a checked-in golden mel fixture.
     /// Generated by `tools/mel-reference/generate.py`. Pinned to the
     /// faster-whisper FeatureExtractor at fixture-generation time.
-    fn golden_dir() -> PathBuf {
+    fn fixture_dir(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
             .join("test")
             .join("fixtures")
-            .join("mel_golden")
+            .join(name)
     }
 
     fn read_f32_le(path: &std::path::Path) -> Vec<f32> {
@@ -238,18 +301,10 @@ mod tests {
     #[test]
     fn build_chunks_rejects_mel_power_overflow() {
         // f32::MAX-scale samples overflow the FFT into ±inf/NaN mel
-        // power. Without this rejection `normalise_log_mel` would flush
-        // the NaN to the silence floor and corrupted audio would
-        // transcribe as {:ok, ...} with garbage text.
-        let preprocessor = Preprocessor {
-            feature_size: 2,
-            hop_length: 4,
-            n_fft: 8,
-            n_samples: 64,
-            nb_max_frames: 16,
-            sampling_rate: 16,
-            mel_filters: Array2::<f64>::ones((2, 5)),
-        };
+        // power. Without this rejection `log_mel` would flush the NaN to
+        // the silence floor and corrupted audio would transcribe as
+        // {:ok, ...} with garbage text.
+        let preprocessor = tiny_preprocessor();
         let samples = vec![f32::MAX; 64];
         let err = preprocessor
             .build_chunks(&samples)
@@ -278,53 +333,30 @@ mod tests {
         assert!((dt - 0.02).abs() < 1e-9, "got {dt}");
     }
 
-    #[test]
-    fn build_chunks_matches_faster_whisper_golden_mel() {
-        let dir = golden_dir();
-        let preprocessor = Preprocessor::load(&dir).expect("load preprocessor config");
-        let samples = read_f32_le(&dir.join("input.pcm_f32"));
-        let reference = read_f32_le(&dir.join("mel.f32"));
-
-        let chunks = preprocessor
-            .build_chunks(&samples)
-            .expect("build_chunks succeeds");
-        assert_eq!(chunks.len(), 1, "fixture is a single 30 s window");
-        let mel = chunks.into_iter().next().unwrap();
-        assert_eq!(
-            mel.shape(),
-            &[preprocessor.feature_size, preprocessor.nb_max_frames]
-        );
+    /// Element-wise comparison of one mel window against its reference
+    /// slice, skipping `trim` frames at each edge (chunk-edge frames use
+    /// reflected instead of neighbouring samples — the known deviation
+    /// documented on `build_chunks`).
+    fn assert_chunk_matches_reference(
+        mel: &Array2<f32>,
+        reference: &[f32],
+        feature_size: usize,
+        n_frames: usize,
+    ) {
+        assert_eq!(mel.shape(), &[feature_size, n_frames]);
         assert_eq!(reference.len(), mel.len());
 
         let mel_slice = mel.as_slice().expect("contiguous mel chunk");
-        let feature_size = preprocessor.feature_size;
-        let n_frames = preprocessor.nb_max_frames;
 
         // Mel layout is `[feature_size, n_frames]` row-major, so the
         // stride along the frame axis is 1. `mel[bin * n_frames + f]`
         // gives bin `bin` at frame `f`.
         //
-        // Per-frame RMS captures average bin error within one time slice.
-        // A wrong filterbank shows up as systemic non-zero RMS across
-        // every frame; an STFT framing difference shows up as a tight
-        // band of bad frames at chunk boundaries with a clean middle.
-        let mut per_frame_rms = vec![0.0_f64; n_frames];
-        for bin in 0..feature_size {
-            for f in 0..n_frames {
-                let idx = bin * n_frames + f;
-                let d = f64::from(mel_slice[idx] - reference[idx]);
-                per_frame_rms[f] += d * d;
-            }
-        }
-        for v in &mut per_frame_rms {
-            *v = (*v / feature_size as f64).sqrt();
-        }
-
         // faster-whisper's librosa STFT uses `center=True` with reflect
-        // padding, so the first and last ~`n_fft / (2 * hop_length)`
-        // frames have no streaming-STFT equivalent and must be
-        // excluded. At n_fft=400, hop=160 that's ~1 frame either side;
-        // we trim 2 to be safe.
+        // padding over the continuous signal, so the first and last
+        // ~`n_fft / (2 * hop_length)` frames of each window have no
+        // per-chunk equivalent and must be excluded. At n_fft=400,
+        // hop=160 that's ~1 frame either side; we trim 2 to be safe.
         let trim = 2_usize;
         let mut overall_max = 0.0_f64;
         let mut overall_sumsq = 0.0_f64;
@@ -356,5 +388,208 @@ mod tests {
             "mel RMS delta {overall_rms:.6} exceeds 0.005 — \
              likely a systemic preprocessor parity issue"
         );
+    }
+
+    #[test]
+    fn build_chunks_matches_faster_whisper_golden_mel() {
+        let dir = fixture_dir("mel_golden");
+        let preprocessor = Preprocessor::load(&dir).expect("load preprocessor config");
+        let samples = read_f32_le(&dir.join("input.pcm_f32"));
+        let reference = read_f32_le(&dir.join("mel.f32"));
+
+        let chunks = preprocessor
+            .build_chunks(&samples)
+            .expect("build_chunks succeeds");
+        assert_eq!(chunks.len(), 1, "fixture is a single 30 s window");
+        assert_chunk_matches_reference(
+            &chunks[0],
+            &reference,
+            preprocessor.feature_size,
+            preprocessor.nb_max_frames,
+        );
+    }
+
+    #[test]
+    fn build_chunks_matches_faster_whisper_golden_mel_multichunk() {
+        // Two-window fixture (3 s windows): a loud first window and a
+        // near-silent partial second window (1 s of quiet tone + zero
+        // pad). Pins the whole-audio normalisation max — the quiet
+        // window must be floored against the loud window's max, not its
+        // own — and the tail zero-pad path; the single-window fixture
+        // can see neither.
+        let dir = fixture_dir("mel_golden_multichunk");
+        let preprocessor = Preprocessor::load(&dir).expect("load preprocessor config");
+        let samples = read_f32_le(&dir.join("input.pcm_f32"));
+        let reference = read_f32_le(&dir.join("mel.f32"));
+
+        let chunks = preprocessor
+            .build_chunks(&samples)
+            .expect("build_chunks succeeds");
+        assert_eq!(chunks.len(), 2, "fixture spans two windows");
+        let window_len = preprocessor.feature_size * preprocessor.nb_max_frames;
+        assert_eq!(reference.len(), 2 * window_len);
+        for (k, chunk) in chunks.iter().enumerate() {
+            assert_chunk_matches_reference(
+                chunk,
+                &reference[k * window_len..(k + 1) * window_len],
+                preprocessor.feature_size,
+                preprocessor.nb_max_frames,
+            );
+        }
+    }
+
+    fn tiny_preprocessor() -> Preprocessor {
+        Preprocessor {
+            feature_size: 2,
+            hop_length: 4,
+            n_fft: 8,
+            n_samples: 64,
+            nb_max_frames: 16,
+            sampling_rate: 16,
+            mel_filters: Array2::<f64>::ones((2, 5)),
+        }
+    }
+
+    #[test]
+    fn build_chunks_normalises_against_the_whole_audio_max() {
+        let preprocessor = tiny_preprocessor();
+
+        // Chunk 1 carries signal; chunk 2 is pure silence.
+        let mut samples = vec![0.0_f32; 128];
+        for (i, v) in samples.iter_mut().take(64).enumerate() {
+            *v = 0.5 * (i as f32 * 0.7).sin();
+        }
+
+        let chunks = preprocessor.build_chunks(&samples).expect("build_chunks");
+        assert_eq!(chunks.len(), 2);
+
+        let loud_max = chunks[0].iter().copied().fold(f32::NEG_INFINITY, f32::max);
+
+        // Every silent-chunk value sits at the clamp floor, which derives
+        // from the WHOLE-audio max: scaled floor = loud max - 8/4 =
+        // loud max - 2. Per-chunk normalisation (the old behaviour)
+        // floors silence against its own max instead, pinning it at
+        // (-10 + 4) / 4 = -1.5 regardless of the rest of the audio.
+        let first = chunks[1][(0, 0)];
+        assert!(
+            chunks[1].iter().all(|v| (v - first).abs() < 1e-6),
+            "silent chunk must be uniformly floored, got non-uniform values"
+        );
+        assert!(
+            (first - (loud_max - 2.0)).abs() < 1e-5,
+            "silent-chunk floor {first} must be loud-chunk max {loud_max} - 2.0"
+        );
+    }
+
+    #[test]
+    fn reflect_pad_chunk_mirrors_edges_without_repeating_them() {
+        // np.pad 'reflect' convention: the edge sample itself is not
+        // repeated. Left pad reads chunk[pad], .., chunk[1]; the body is
+        // zero-extended to n_samples; the trailing pad mirrors the body
+        // end (zeros included).
+        let chunk = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let padded = reflect_pad_chunk(&chunk, 8, 4);
+        assert_eq!(&padded[..4], &[5.0, 4.0, 3.0, 2.0]);
+        assert_eq!(&padded[4..10], &chunk);
+        assert_eq!(&padded[10..12], &[0.0, 0.0]);
+        assert_eq!(&padded[12..], &[0.0, 6.0, 5.0, 4.0]);
+    }
+
+    #[test]
+    fn reflect_pad_chunk_reflects_into_zeros_for_tiny_chunks() {
+        // A chunk of <= pad samples reflects past its own data into the
+        // zero-extended region — np.pad 'reflect' on the zero-padded
+        // array reads zeros there. The old clamp duplicated the chunk's
+        // last sample instead, injecting spurious energy into the
+        // leading frames of sub-12.5 ms audio.
+        let padded = reflect_pad_chunk(&[0.5], 8, 4);
+        assert_eq!(&padded[..5], &[0.0, 0.0, 0.0, 0.0, 0.5]);
+
+        let padded = reflect_pad_chunk(&[1.0, 2.0, 3.0], 8, 4);
+        assert_eq!(&padded[..4], &[0.0, 0.0, 3.0, 2.0]);
+    }
+
+    fn write_config(dir: &std::path::Path, json: &str) {
+        std::fs::write(dir.join(PREPROCESSOR_CONFIG_FILE), json).expect("write config");
+    }
+
+    fn base_config() -> serde_json::Value {
+        serde_json::json!({
+            "feature_size": 2,
+            "hop_length": 4,
+            "n_fft": 8,
+            "n_samples": 64,
+            "nb_max_frames": 16,
+            "sampling_rate": 16,
+        })
+    }
+
+    #[test]
+    fn load_rejects_zero_numeric_fields_naming_the_field() {
+        // Zero values panic later (slice::chunks(0), divide by zero) and
+        // would surface as an opaque :nif_panic at the first transcribe;
+        // the load error must name the bad field instead.
+        for field in [
+            "feature_size",
+            "hop_length",
+            "n_fft",
+            "n_samples",
+            "nb_max_frames",
+            "sampling_rate",
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let mut config = base_config();
+            config[field] = serde_json::json!(0);
+            write_config(dir.path(), &config.to_string());
+
+            let err = Preprocessor::load(dir.path()).expect_err("zero field must fail at load");
+            let msg = format!("{err:#}");
+            assert!(msg.contains(field), "error must name {field}, got: {msg}");
+        }
+    }
+
+    #[test]
+    fn load_rejects_mel_filters_shape_mismatch() {
+        // An undersized filterbank panics on out-of-bounds indexing in
+        // the mel projection at transcribe time; the mismatch must be a
+        // load error naming both shapes.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = base_config();
+        // 2 rows x 4 cols, but n_fft/2 + 1 = 5 columns are required.
+        config["mel_filters"] = serde_json::json!([[0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]]);
+        write_config(dir.path(), &config.to_string());
+
+        let err = Preprocessor::load(dir.path()).expect_err("shape mismatch must fail at load");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("mel_filters"), "got: {msg}");
+        assert!(
+            msg.contains("[2, 4]") && msg.contains("[2, 5]"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_rejects_ragged_mel_filters_rows() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = base_config();
+        // First row sets 5 columns; the second row is short.
+        config["mel_filters"] =
+            serde_json::json!([[0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]]);
+        write_config(dir.path(), &config.to_string());
+
+        let err = Preprocessor::load(dir.path()).expect_err("ragged rows must fail at load");
+        assert!(format!("{err:#}").contains("mel_filters"));
+    }
+
+    #[test]
+    fn load_accepts_a_consistent_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = base_config();
+        config["mel_filters"] = serde_json::json!(vec![vec![0.1_f64; 5]; 2]);
+        write_config(dir.path(), &config.to_string());
+
+        let preprocessor = Preprocessor::load(dir.path()).expect("consistent config loads");
+        assert_eq!(preprocessor.mel_filters.shape(), &[2, 5]);
+        assert_eq!(preprocessor.n_samples, 64);
     }
 }

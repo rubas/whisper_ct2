@@ -30,6 +30,10 @@ rustfft = "6.4"
 # and thread use. Rationale and cost on `WhisperResource` in `lib.rs`.
 parking_lot = "0.12"
 
+[dev-dependencies]
+# Throwaway model directories for `Preprocessor::load` validation tests.
+tempfile = "3"
+
 [features]
 # Build-time choices, selected via mix:
 #   WHISPER_CT2_FEATURES="dnnl cuda-dynamic" mix compile

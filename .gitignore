@@ -21,6 +21,7 @@ priv/native/
 # under tools/.
 test/fixtures/*
 !test/fixtures/mel_golden/
+!test/fixtures/mel_golden_multichunk/
 !test/fixtures/words_golden/
 
 # Local caches

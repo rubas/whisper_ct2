@@ -461,9 +461,15 @@ fn detect_language(
 
 /// Builds the SOT block used by `Whisper::align`, mirroring the prompt
 /// shape `generate` was given so word boundaries land where they were
-/// scored. `*.en` checkpoints get `[sot, no_timestamps]`; multilingual
-/// gets `[sot, lang, transcribe, no_timestamps]` for the batch's
-/// (already-validated uniform) language token.
+/// scored. `*.en` checkpoints get `[sot]`; multilingual gets
+/// `[sot, lang, transcribe]` for the batch's (already-validated uniform)
+/// language token.
+///
+/// `<|notimestamps|>` must NOT be included: CTranslate2's
+/// `WhisperReplica::align` appends it internally (`whisper.cc`), so an
+/// explicit one would reach the decoder doubled, perturbing the
+/// cross-attention the word timings derive from. faster-whisper passes
+/// its `sot_sequence` without the token for the same reason.
 fn build_align_start_sequence(
     tokenizer: &hf::Tokenizer,
     specials: &SpecialTokens,
@@ -471,14 +477,13 @@ fn build_align_start_sequence(
     language_token: &str,
 ) -> Result<Vec<usize>> {
     if !multilingual {
-        return Ok(vec![specials.sot as usize, specials.no_timestamps as usize]);
+        return Ok(vec![specials.sot as usize]);
     }
     let lang_id = token_id(tokenizer, language_token)?;
     Ok(vec![
         specials.sot as usize,
         lang_id as usize,
         specials.transcribe as usize,
-        specials.no_timestamps as usize,
     ])
 }
 

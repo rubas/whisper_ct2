@@ -104,6 +104,35 @@ defmodule WhisperCt2.IntegrationTest do
     assert t1.language == "en" and t2.language == "en"
   end
 
+  test "transcribe_batch aligns a batch containing a silence-only audio",
+       %{model: model, audio: audio} do
+    # The silent audio's chunk contributes an empty (or hallucination-only)
+    # token vector to the one batched `align` call. CTranslate2 still
+    # aligns `[sot, no_timestamps, eot]` for it; that must neither error
+    # nor shift the speech audio's word timings.
+    silence = silent_pcm(16_000 * 2)
+
+    assert {:ok, [speech, silent]} =
+             WhisperCt2.transcribe_batch(
+               model,
+               [audio, {:pcm_f32, silence}],
+               language: "en",
+               word_timestamps: true
+             )
+
+    refute Enum.empty?(speech.segments)
+    assert Enum.all?(speech.segments, &is_list(&1.words))
+
+    all_words = Enum.flat_map(speech.segments, & &1.words)
+    [first | _] = all_words
+    assert first.start < 2.0
+    assert List.last(all_words).end <= speech.duration_s + 0.5
+
+    # Whatever tiny.en hallucinates into 2 s of silence (usually nothing)
+    # must come back structurally valid with words attached.
+    assert Enum.all?(silent.segments, &is_list(&1.words))
+  end
+
   test "initial_prompt is accepted on the .en model", %{model: model, audio: audio} do
     # Smoke test only: tiny.en is known to sometimes empty its output when
     # given an initial_prompt that derails its decoding. The contract we
@@ -145,12 +174,13 @@ defmodule WhisperCt2.IntegrationTest do
     # only legitimate sources of drift are f32 rounding and ct2 beam-
     # search tie-breaking.
     #
-    # 60 ms = 3 encoder frames (one quantization step beyond the
-    # 40 ms drift we currently observe). Tight enough that any real
-    # regression in the alignment math — wrong DTW `start_sequence`,
-    # `num_frames` in encoder vs mel units, missed punctuation merge —
-    # fails loud; loose enough that a single beam-search tie-break
-    # flipping one frame doesn't go red.
+    # 60 ms = 3 encoder frames; we currently observe 20 ms (one frame).
+    # The doubled <|notimestamps|> in the align start_sequence (#25) cost
+    # 40 ms before its fix. Tight enough that any real regression in the
+    # alignment math — wrong DTW `start_sequence`, `num_frames` in
+    # encoder vs mel units, missed punctuation merge — fails loud; loose
+    # enough that a single beam-search tie-break flipping one frame
+    # doesn't go red.
 
     @golden_dir Path.expand("fixtures/words_golden", __DIR__)
 
