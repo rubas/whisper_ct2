@@ -32,9 +32,9 @@ jobs:
       - uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
         env:
           INSTALL_DIR_FOR_OTP: ${{ runner.tool_cache }}/setup-beam/otp-29.0
-          INSTALL_DIR_FOR_ELIXIR: ${{ runner.tool_cache }}/setup-beam/elixir-1.20.0
+          INSTALL_DIR_FOR_ELIXIR: ${{ runner.tool_cache }}/setup-beam/elixir-1.20.1
         with:
-          elixir-version: "1.20.0"
+          elixir-version: "1.20.1"
           otp-version: "29.0"
 
       - name: Install dependencies
