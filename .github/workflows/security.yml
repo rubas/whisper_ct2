@@ -59,9 +59,12 @@ jobs:
         # ecosystems. The NIF crate carries the largest native surface
         # (vendored CTranslate2 + its third_party C++); RustSec advisories
         # against its Rust dependency tree must fail this workflow too.
+        # Keep the `paste` advisory ignore narrow: it is an unmaintained-only
+        # transitive warning through tokenizers/ct2rs, and should be removed
+        # once upstream no longer depends on paste 1.0.15.
         if: ${{ !cancelled() }}
         working-directory: native/whisper_ct2_native
-        run: cargo audit
+        run: cargo audit --deny warnings --ignore RUSTSEC-2024-0436
 
       - name: Report audit failure
         if: failure()
