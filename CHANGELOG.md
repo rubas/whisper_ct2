@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.1 - 2026-06-11
+
+### Changed
+
+- Rustler 0.38.0 is now used for source builds, and the
+  `rustler_precompiled` requirement now targets 0.9.0. This keeps the NIF
+  packaging stack current; the public Elixir API is unchanged.
+- Development-only Hex dependencies and compatible Rust lockfile dependencies
+  were refreshed to their latest patch releases.
+
 ## 0.6.0 - 2026-06-10
 
 Fixes every finding from the 2026-06 multi-agent Rust/STT NIF audit

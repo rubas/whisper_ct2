@@ -1,7 +1,7 @@
 defmodule WhisperCt2.MixProject do
   use Mix.Project
 
-  @version "0.6.0"
+  @version "0.6.1"
   @source_url "https://github.com/rubas/whisper_ct2"
 
   @spec project() :: keyword()
@@ -64,8 +64,8 @@ defmodule WhisperCt2.MixProject do
       # from the GitHub release matching the package version. `rustler` is
       # only needed for source builds (`WHISPER_CT2_BUILD=1`) and during
       # release CI, so it is marked optional.
-      {:rustler_precompiled, "~> 0.8"},
-      {:rustler, "~> 0.37.3", optional: true},
+      {:rustler_precompiled, "~> 0.9.0"},
+      {:rustler, "~> 0.38.0", optional: true},
       {:credo, "~> 1.7.18", only: [:dev, :test], runtime: false},
       # Backs `mix deps.audit` in the daily security workflow.
       {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false},
