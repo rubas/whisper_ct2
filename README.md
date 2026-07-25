@@ -6,9 +6,9 @@ Rustler NIF, so Elixir code can transcribe f32 PCM buffers without starting
 Python or a separate inference service.
 
 CTranslate2 is the speed-optimised C++ inference engine that powers
-[`faster-whisper`](https://github.com/SYSTRAN/faster-whisper) — 4-8x faster
+[`faster-whisper`](https://github.com/SYSTRAN/faster-whisper): 4-8x faster
 than vanilla `openai-whisper` on the same hardware, with int8 / int8-float16
-quantisation and CUDA / oneDNN / MKL / Accelerate backends. 
+quantisation and CUDA / oneDNN / MKL / Accelerate backends.
 
 ## Installation
 
@@ -154,7 +154,7 @@ one shape:
 
 Anything else (paths, raw bare binaries, WAV bytes, MP3, 44.1 kHz, ...)
 is rejected at the boundary with an `:invalid_request` error, as are
-non-finite samples (NaN or infinity — usually an upstream decoder bug).
+non-finite samples (NaN or infinity, usually an upstream decoder bug).
 There is no bundled audio decoder; decode, downmix, and resample
 upstream using your tool of choice. For a one-shot file conversion:
 
