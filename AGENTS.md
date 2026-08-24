@@ -1,75 +1,49 @@
-# whisper_ct2 Agent Instructions
+# whisper_ct2
 
-`whisper_ct2` is a native Elixir Whisper STT library backed by CTranslate2
-via a Rustler NIF over the `ct2rs` crate. No Python is involved.
+Elixir bindings for Whisper speech-to-text through CTranslate2, driven by a
+Rustler NIF over the `ct2rs` crate. No Python at runtime.
 
-For the user-facing intro, options, audio contract, and error taxonomy,
-read `README.md`. This file covers only repo-internal guidance.
+`README.md` owns the user-facing intro, options, audio contract, and error
+taxonomy. This file covers repo-internal work only.
 
-## Workflow
+## Gates
 
-Standard interface is `Taskfile.yml`:
+`task check` is the default gate: format check, compile, credo, Elixir tests,
+Rust tests, and zizmor over the workflows. CI runs the same target on pushes
+to `main` and on pull requests, then builds the Hex tarball.
 
-- `task setup` - `mix deps.get`.
-- `task compile` - `mix compile --warnings-as-errors`. First source build
-  of CTranslate2 takes ~10 minutes.
-- `task fmt` / `task fmt:check` - Elixir + Rust formatting.
-- `task lint` - `mix credo --strict` and `cargo clippy -D warnings`.
-- `task test` - fast Elixir unit tests.
-- `task test:integration` - real model, real inference, ~75 MB download.
-- `task test:rust` - Rust unit tests.
-- `task check` - full local gate (fmt, compile, lint, tests, docs).
+- The first compile builds CTranslate2 from source and takes about ten
+  minutes. Later compiles reuse the Cargo target dir.
+- `task test:integration` downloads the tiny model and the JFK clip (about
+  75 MB) and runs a real transcription. GitHub runs it on a weekly cron and
+  on manual dispatch, never on a pull request. Run it locally after you
+  change the NIF.
+- `task fix` applies formatting and clippy fixes in place.
 
-## Architectural invariants
+## Layout
 
-These are the load-bearing decisions that aren't visible from the public
-API surface and should not be silently undone:
+- `native/whisper_ct2_native/src/` holds the NIF: `transcribe.rs` the
+  transcription flow, `preprocessor.rs` the mel filterbank, `tokens.rs` the
+  special-token resolution, `align.rs` the word alignment.
+- `tools/*/generate.py` regenerate the golden fixtures from `faster-whisper`.
+  Run them only when the reference implementation changes.
+- `test/fixtures/` is downloaded on demand and gitignored, except the
+  `*_golden/` directories, which are checked in so the parity tests run
+  without network access.
+- `checksum-Elixir.WhisperCt2.Native.exs` is tracked so the checksum matching
+  each tagged release is reproducible from the repo.
+- `docs/release.md` holds the artefact matrix and the publish procedure.
 
-- Drive `ct2rs::sys::Whisper` directly; the NIF owns the mel filterbank,
-  prompt construction, and word alignment. The `ct2rs::Whisper`
-  high-level wrapper does not expose structured per-segment data,
-  `initial_prompt` / `prefix`, or batched multi-audio transcribe.
-- `transcribe_batch/3` stacks all chunks of all audios into one storage
-  view; the encoder runs once across the whole batch.
-- English-only checkpoints (`*.en`) get the `[<|startoftranscript|>]`
-  prompt only; multilingual checkpoints get `[sot, lang, transcribe]`.
-  The branch lives in `transcribe.rs::transcribe_many`; do not collapse
-  it.
-- Whisper timestamp tokens are not in the tokenizer vocab; their base
-  ID is `no_timestamps_id + 1` (matches faster-whisper). See
-  `tokens::SpecialTokens::resolve`.
+## House decisions
 
-## Release
-
-Precompiled artefacts are built on tag push by
-`.github/workflows/release.yml` for four targets:
-
-- `aarch64-apple-darwin` (Accelerate)
-- `x86_64-unknown-linux-gnu` (oneDNN + `cuda-dynamic`)
-- `x86_64-unknown-linux-gnu` `mkl` variant (Intel MKL + `cuda-dynamic`)
-- `aarch64-unknown-linux-gnu` (oneDNN + `cuda-dynamic`)
-
-Consumers fetch the artefact matching their triple through
-`rustler_precompiled`. Opt into a source build with `WHISPER_CT2_BUILD=1`
-or pick an MKL artefact on x86_64 Linux with `WHISPER_CT2_VARIANT=mkl`.
-
-## Hex publish flow
-
-1. Bump `@version` in `mix.exs` and add a `CHANGELOG.md` entry. Push to
-   `main`.
-2. The `release.yml` workflow detects the version bump, builds NIF
-   tarballs for every target/variant, creates the tag, and uploads the
-   tarballs plus `SHA256SUMS` to the GitHub release.
-3. Locally, regenerate the checksum file from the published assets,
-   then commit and push it:
-
-   ```bash
-   mix rustler_precompiled.download WhisperCt2.Native --all --ignore-unavailable --print
-   jj describe -m "chore: update NIF checksum for v$(...)" && jj git push -b main
-   ```
-
-   `checksum-Elixir.WhisperCt2.Native.exs` is tracked in git so the
-   checksum that matches each tagged release is reproducible from the
-   repo.
-4. Run `mix hex.publish` from a clean tree. The checksum is included in
-   the Hex tarball via `files: ~w(... checksum-*.exs ...)` in `mix.exs`.
+- The NIF drives `ct2rs::sys::Whisper` directly and owns the mel filterbank,
+  prompt construction, and word alignment. The high-level `ct2rs::Whisper`
+  wrapper exposes no structured per-segment data, no `initial_prompt` or
+  `prefix`, and no batched multi-audio transcribe.
+- `transcribe_batch/3` stacks every chunk of every audio into one storage
+  view, so the encoder runs once across the whole batch.
+- English-only checkpoints (`*.en`) get the `[<|startoftranscript|>]` prompt
+  alone; multilingual checkpoints get `[sot, lang, transcribe]`. The branch
+  lives in `transcribe.rs::transcribe_many`. Keep it split.
+- Whisper timestamp tokens are absent from the tokenizer vocab. Their base ID
+  is `no_timestamps_id + 1`, which matches faster-whisper. See
