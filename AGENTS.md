@@ -4,8 +4,7 @@
 via a Rustler NIF over the `ct2rs` crate. No Python is involved.
 
 For the user-facing intro, options, audio contract, and error taxonomy,
-read `README.md`. For consumer rules synced via `mix usage_rules.sync`,
-read `usage-rules.md`. This file covers only repo-internal guidance.
+read `README.md`. This file covers only repo-internal guidance.
 
 ## Workflow
 
