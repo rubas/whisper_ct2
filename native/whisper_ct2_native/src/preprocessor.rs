@@ -293,8 +293,11 @@ mod tests {
         let bytes = std::fs::read(path).expect("fixture file");
         assert!(bytes.len().is_multiple_of(4), "fixture not 4-byte aligned");
         bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .copied()
+            .map(f32::from_le_bytes)
             .collect()
     }
 

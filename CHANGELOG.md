@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.2 - 2026-08-27
+
+### Changed
+
+- ct2rs 0.9.22 -> 0.10.0. The release only adds segment and word-level
+  helpers to the high-level `ct2rs::Whisper` wrapper; `ct2rs::sys`, which
+  the NIF drives, and the vendored CTranslate2 4.8.1 are unchanged.
+- Rust lockfile dependencies refreshed to their latest compatible releases.
+  `mel_spec`, `ndarray` and `tokenizers` stay on 0.3 / 0.16 / 0.22 because
+  ct2rs 0.10.0 still requires those ranges.
+- Development-only Hex dependency `ex_slop` moved 0.4.3 -> 0.4.4.
+- The two `chunks_exact(4)` PCM decode loops now use `slice::as_chunks`,
+  which clears the `clippy::chunks_exact_to_as_chunks` lint on newer Rust
+  toolchains. Both call sites already reject a non-multiple-of-4 length,
+  so the decoded samples are unchanged.
+
 ## 0.6.1 - 2026-06-11
 
 ### Changed
