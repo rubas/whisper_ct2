@@ -1,6 +1,15 @@
 # Changelog
 
-## 0.6.2 - 2026-08-27
+## Unreleased
+
+### Changed
+
+- CI now uses Elixir 1.20.3 (was 1.20.2) and OTP 29.0.5 (was 29.0). This
+  applies to `ci.yml`, `integration.yml` and `security.yml`. `security.yml`
+  also names the versions in its setup-beam install directories. Those move
+  too. `mix.exs` keeps `elixir: "~> 1.17"` as the minimum version.
+
+## 0.6.2 - 2026-08-28
 
 ### Changed
 
