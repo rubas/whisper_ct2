@@ -10,8 +10,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 rustler = "0.38.0"
-ct2rs = { version = "0.9.22", features = ["whisper"] }
-# Versions pinned to match ct2rs 0.9.22 so duplicate crates collapse during
+ct2rs = { version = "0.10.0", features = ["whisper"] }
+# Versions pinned to match ct2rs 0.10.0 so duplicate crates collapse during
 # build. `tokenizers` must stay on ct2rs's major/minor: our code passes
 # ct2rs's re-exported `hf::Tokenizer` to `tokenizers::Tokenizer` by
 # reference, which only compiles while both are the same crate version.
