@@ -39,7 +39,7 @@ jobs:
           persist-credentials: false
 
       - name: Shared build env
-        uses: ./.github/actions/setup
+        uses: $/.github/actions/setup
         with:
           elixir-version: ${{ env.ELIXIR_VERSION }}
           otp-version: ${{ env.OTP_VERSION }}
