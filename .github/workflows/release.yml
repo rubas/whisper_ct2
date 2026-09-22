@@ -36,6 +36,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # A dispatch builds the requested tag, so the checkout fails when
+          # that tag does not exist.
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -45,28 +48,27 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_TAG: ${{ inputs.tag }}
-          TRIGGER_SHA: ${{ github.sha }}
         run: |
+          VERSION="$(sed -n 's/^  @version "\([^"]*\)"$/\1/p' mix.exs | head -n1)"
+          if [ -z "$VERSION" ]; then
+            echo "Failed to read current mix.exs version" >&2
+            exit 1
+          fi
+          TAG="v$VERSION"
+
+          # A push decides from the tag, not from HEAD^: a dropped run or a
+          # push whose last commit is not the bump still releases on the
+          # next push to main.
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            TAG="$INPUT_TAG"
-            VERSION="${TAG#v}"
-            SHOULD_RELEASE=true
-          else
-            VERSION="$(sed -n 's/^  @version "\([^"]*\)"$/\1/p' mix.exs | head -n1)"
-            if [ -z "$VERSION" ]; then
-              echo "Failed to read current mix.exs version" >&2
+            if [ "$TAG" != "$INPUT_TAG" ]; then
+              echo "Tag $INPUT_TAG has @version $VERSION in mix.exs" >&2
               exit 1
             fi
-            TAG="v$VERSION"
-
-            # Decide from the tag, not from HEAD^: a dropped run or a push
-            # whose last commit is not the bump still releases on the next
-            # push to main.
-            if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-              SHOULD_RELEASE=false
-            else
-              SHOULD_RELEASE=true
-            fi
+            SHOULD_RELEASE=true
+          elif git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            SHOULD_RELEASE=false
+          else
+            SHOULD_RELEASE=true
           fi
 
           # Single source of truth for the NIF version: parse it from the
@@ -83,7 +85,7 @@ jobs:
           echo "should_release=$SHOULD_RELEASE" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "sha=$TRIGGER_SHA" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "nif_version=$NIF_VERSION" >> "$GITHUB_OUTPUT"
 
   build:
@@ -288,7 +290,6 @@ jobs:
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2 # zizmor: ignore[superfluous-actions]
         with:
           tag_name: ${{ needs.detect.outputs.tag }}
-          target_commitish: ${{ needs.detect.outputs.sha }}
           files: |
             artifacts/*.tar.gz
             artifacts/SHA256SUMS

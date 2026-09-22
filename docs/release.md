@@ -37,7 +37,9 @@ x86_64 Linux, and `WHISPER_CT2_BUILD=1` forces a source build instead.
    under `:files`, so the checksum travels inside the Hex tarball.
 
 To rebuild and re-release an existing tag without a version bump, dispatch the
-workflow manually. Select that tag under "Use workflow from" and pass the same
-tag as the `tag` input. The build checks out the commit behind the dispatch
-ref. The `tag` input only names the release, so a dispatch from `main` uploads
-binaries built from `main` under the old tag.
+workflow manually and pass the tag as the `tag` input. The build checks out
+that tag, whatever ref you select under "Use workflow from". The run fails
+when the tag does not exist or when its `@version` differs from the tag. The
+rebuilt tarballs replace the assets of the release, and their bytes differ, so
+regenerate the checksum file afterwards. Do not rebuild a tag that is already
+on Hex: its package carries the old checksums.
