@@ -351,9 +351,11 @@ defmodule WhisperCt2 do
       }) do
     segments = Enum.map(raw_segments, &build_segment/1)
 
+    # The NIF keeps the tokenizer's spacing, so segments join without a
+    # separator: English keeps its word breaks and CJK gets no extra space.
     text =
-      segments
-      |> Enum.map_join(" ", & &1.text)
+      raw_segments
+      |> Enum.map_join(& &1.text)
       |> String.trim()
 
     %Transcription{
@@ -376,7 +378,7 @@ defmodule WhisperCt2 do
         words: words
       }) do
     %Segment{
-      text: text,
+      text: String.trim(text),
       start: start,
       end: end_s,
       no_speech_prob: no_speech_prob,

@@ -376,10 +376,11 @@ pub(crate) fn transcribe_many(
             );
 
             for (sub_idx, sub) in subs.into_iter().enumerate() {
-                let text = decode_ids(tokenizer, &sub.text_token_ids)?
-                    .trim()
-                    .to_owned();
-                if text.is_empty() {
+                // Keep the decoded spacing: the leading space marks a word
+                // boundary, and CJK text has none. Elixir trims each
+                // segment and joins the raw texts into the transcript.
+                let text = decode_ids(tokenizer, &sub.text_token_ids)?;
+                if text.trim().is_empty() {
                     continue;
                 }
                 let words = if request.word_timestamps {
