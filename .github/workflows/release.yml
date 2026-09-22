@@ -56,9 +56,10 @@ jobs:
           fi
           TAG="v$VERSION"
 
-          # A push decides from the tag, not from HEAD^: a dropped run or a
-          # push whose last commit is not the bump still releases on the
-          # next push to main.
+          # A push decides from the tag, not from HEAD^: it releases whenever
+          # tag v<version> is missing. A push whose last commit is not the
+          # bump still releases, and a dropped run releases on the next push
+          # to main.
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             if [ "$TAG" != "$INPUT_TAG" ]; then
               echo "Tag $INPUT_TAG has @version $VERSION in mix.exs" >&2
