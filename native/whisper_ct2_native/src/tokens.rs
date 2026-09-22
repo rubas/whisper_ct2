@@ -159,8 +159,10 @@ pub(crate) struct SubSegment {
 ///
 /// `content_duration_s` is the wall-clock length of the real audio inside
 /// this chunk's window (≤ 30 s; the final chunk of an audio is usually
-/// shorter — faster-whisper's `content_frames - seek` bound). It is the
-/// fallback `end_in_chunk` whenever no closing timestamp exists,
+/// shorter — faster-whisper's `content_frames - seek` bound). It bounds
+/// every timestamp, so a pair the model places in the silent padding
+/// keeps its text as a zero-width sub-segment at the content end. It is
+/// also the fallback `end_in_chunk` whenever no closing timestamp exists,
 /// including the **unclosed pair** case: the model emitted
 /// `<|t_start|> text [EOT]` with no closing timestamp. Some fine-tunes
 /// (notably notebotIE Swiss-German) only reliably emit the opening
@@ -237,8 +239,8 @@ pub(crate) fn split_sub_segments(
 
         out.push(SubSegment {
             text_token_ids: token_ids[text_start..text_end].to_vec(),
-            start_in_chunk: timestamp_seconds(start_id, timestamp_begin),
-            end_in_chunk: timestamp_seconds(end_id, timestamp_begin),
+            start_in_chunk: timestamp_seconds(start_id, timestamp_begin).min(content_duration_s),
+            end_in_chunk: timestamp_seconds(end_id, timestamp_begin).min(content_duration_s),
         });
     }
     out
@@ -400,6 +402,25 @@ mod tests {
         let out = split_sub_segments(&[ts(500), 100], BEGIN, 5.0);
         assert_eq!(out.len(), 1);
         assert!((out[0].start_in_chunk - 5.0).abs() < 1e-6);
+        assert!((out[0].end_in_chunk - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn split_sub_segments_clamps_closed_pair_past_content_end() {
+        // A closed pair hallucinated into the silent padding (10 s to
+        // 11 s on a 5 s tail) keeps its text at the content end.
+        let out = split_sub_segments(&[ts(500), 100, ts(550)], BEGIN, 5.0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].text_token_ids, vec![100]);
+        assert!((out[0].start_in_chunk - 5.0).abs() < 1e-6);
+        assert!((out[0].end_in_chunk - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn split_sub_segments_clamps_closed_pair_end_straddling_content_end() {
+        let out = split_sub_segments(&[ts(0), 100, ts(400)], BEGIN, 5.0);
+        assert_eq!(out.len(), 1);
+        assert!((out[0].start_in_chunk - 0.0).abs() < 1e-6);
         assert!((out[0].end_in_chunk - 5.0).abs() < 1e-6);
     }
 

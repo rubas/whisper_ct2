@@ -581,9 +581,9 @@ fn encoder_frames_for_chunk(
 
 /// Wall-clock seconds of real audio inside chunk `chunk_idx` of a
 /// `samples_len`-sample audio — as opposed to the padded 30 s window.
-/// `split_sub_segments` uses this as its fallback segment end so the tail
-/// chunk of a 35 s audio ends at 35 s, not 60 s (faster-whisper bounds the
-/// same fallback by `content_frames - seek`).
+/// `split_sub_segments` bounds every timestamp and fallback segment end by
+/// it, so the tail chunk of a 35 s audio ends at 35 s, not 60 s
+/// (faster-whisper bounds the fallback by `content_frames - seek`).
 fn chunk_content_duration_s(
     samples_len: usize,
     chunk_idx: usize,
