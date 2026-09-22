@@ -374,14 +374,7 @@ pub(crate) fn transcribe_many(
                 anyhow!("ct2 generation result is missing scores despite return_scores=true")
             })?;
             let length_penalty = request.options.length_penalty;
-            let avg_logprob = finite(
-                "avg_logprob",
-                avg_logprob(score, result.sequences_ids[0].len(), length_penalty),
-            )
-            .with_context(|| {
-                format!("length_penalty {length_penalty} puts the decoder score out of f32 range")
-            })?;
-            let no_speech_prob = finite("no_speech_prob", result.no_speech_prob)?;
+            let avg_logprob = avg_logprob(score, result.sequences_ids[0].len(), length_penalty);
 
             for (sub_idx, sub) in subs.into_iter().enumerate() {
                 // Keep the decoded spacing: the leading space marks a word
@@ -391,6 +384,12 @@ pub(crate) fn transcribe_many(
                 if text.trim().is_empty() {
                     continue;
                 }
+                // Check only what a segment encodes: an empty hypothesis
+                // can have a non-finite score, but it yields no segment.
+                let avg_logprob = finite("avg_logprob", avg_logprob).with_context(|| {
+                    format!("decoder score {score} with length_penalty {length_penalty}")
+                })?;
+                let no_speech_prob = finite("no_speech_prob", result.no_speech_prob)?;
                 let words = if request.word_timestamps {
                     let aligned_chunk = words_per_chunk.get(global_idx).ok_or_else(|| {
                         anyhow!(
