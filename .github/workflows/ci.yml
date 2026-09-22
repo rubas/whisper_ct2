@@ -22,6 +22,9 @@ jobs:
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-check
       cancel-in-progress: true
+    # The slowest of the last 100 runs took 15 min, with a cold CTranslate2
+    # build. 30 min leaves room for that and fails a hang early.
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
