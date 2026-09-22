@@ -61,8 +61,12 @@ defmodule WhisperCt2.Pcm do
 
   defp do_slice(samples, sample_rate, start_s, duration_s) do
     total_samples = div(byte_size(samples), @bytes_per_sample)
-    start_sample = trunc(start_s * sample_rate)
-    requested_samples = trunc(duration_s * sample_rate)
+    # A float product past the f64 range raises. Any time past
+    # `total_samples + 1` seconds is past the end at every sample rate,
+    # so capping there keeps each result and message the same.
+    limit_s = total_samples + 1
+    start_sample = trunc(min(start_s, limit_s) * sample_rate)
+    requested_samples = trunc(min(duration_s, limit_s) * sample_rate)
     end_sample = start_sample + requested_samples
     buffer_duration_s = total_samples / sample_rate
 

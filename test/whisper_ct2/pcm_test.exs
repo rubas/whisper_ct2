@@ -48,6 +48,20 @@ defmodule WhisperCt2.PcmTest do
                Pcm.slice(buffer, @sample_rate, 5.0, 1.0)
     end
 
+    test "rejects start or duration whose sample count overflows a float" do
+      buffer = samples(1)
+
+      assert {:error, %Error{reason: :invalid_request, message: msg}} =
+               Pcm.slice(buffer, @sample_rate, 1.0e308, 1.0)
+
+      assert msg =~ "past the end of the buffer"
+
+      assert {:error, %Error{reason: :invalid_request, message: msg}} =
+               Pcm.slice(buffer, @sample_rate, 0.0, 1.0e308)
+
+      assert msg =~ "extends past the end"
+    end
+
     test "rejects negative start" do
       buffer = samples(1)
 
