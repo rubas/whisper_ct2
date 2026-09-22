@@ -478,10 +478,11 @@ fn compute_max_duration_frames(words: &[PreWord], seconds_per_frame: f32) -> usi
         return 0;
     }
     durations.sort_unstable();
-    let median = durations[durations.len() / 2];
+    let n = durations.len();
     let cap_frames = (MEDIAN_DURATION_CAP_S / seconds_per_frame).round() as usize;
-    let capped = median.min(cap_frames);
-    capped.saturating_mul(2)
+    // 2 * median is the sum of the two middle values, exact in integers;
+    // for an odd count both indices point at the same value.
+    (durations[(n - 1) / 2] + durations[n / 2]).min(cap_frames * 2)
 }
 
 /// Folds standalone prepend/append punctuation tokens back into the
@@ -683,17 +684,29 @@ mod tests {
 
     #[test]
     fn compute_max_duration_frames_returns_2x_median() {
-        // Durations 10, 20, 30 frames; median = 20; 2x median = 40, well
-        // under the 0.7 s cap at seconds_per_frame=0.02 (35 frames).
-        // So the cap dominates: min(20, 35) * 2 = 40 .. wait — cap is
-        // `min(median, cap_frames)`, then `* 2`. cap_frames at 0.02 s/frame
-        // = 35. min(20, 35) = 20 → 40.
+        // Durations 10, 20, 30 frames; median = 20, under the 0.7 s cap
+        // (35 frames at 0.02 s/frame), so 2x median = 40.
         let words = vec![
             make_pre_word(0, 10, "a"),
             make_pre_word(0, 20, "b"),
             make_pre_word(0, 30, "c"),
         ];
         assert_eq!(compute_max_duration_frames(&words, 0.02), 40);
+    }
+
+    #[test]
+    fn compute_max_duration_frames_averages_the_middle_pair_for_even_counts() {
+        // faster-whisper's np.median([1, 30]) is 15.5 frames, so 2x is 31;
+        // [10, 20, 30, 40] has median 25, so 2x is 50.
+        let pair = vec![make_pre_word(0, 1, "a"), make_pre_word(0, 30, "b")];
+        assert_eq!(compute_max_duration_frames(&pair, 0.02), 31);
+        let four = vec![
+            make_pre_word(0, 10, "a"),
+            make_pre_word(0, 20, "b"),
+            make_pre_word(0, 30, "c"),
+            make_pre_word(0, 40, "d"),
+        ];
+        assert_eq!(compute_max_duration_frames(&four, 0.02), 50);
     }
 
     #[test]
