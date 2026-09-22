@@ -230,7 +230,9 @@ jobs:
   tag:
     name: Create release tag
     runs-on: ubuntu-24.04
-    needs: detect
+    # Push the tag only after every artefact builds. A failed build then
+    # leaves no tag, and the next push to main releases the version.
+    needs: [detect, build]
     if: github.event_name == 'push' && needs.detect.outputs.should_release == 'true'
     permissions:
       contents: write # push the release tag
