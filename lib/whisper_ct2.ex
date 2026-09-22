@@ -267,8 +267,6 @@ defmodule WhisperCt2 do
           {:ok, [Transcription.t()]} | {:error, Error.t()}
   def transcribe_batch(model, audios, opts \\ [])
 
-  def transcribe_batch(%Model{} = _model, [], _opts), do: {:ok, []}
-
   def transcribe_batch(%Model{} = model, audios, opts)
       when is_list(audios) and is_list(opts) do
     with :ok <- validate_options(opts, transcribe_validators()),
@@ -285,6 +283,8 @@ defmodule WhisperCt2 do
      )}
   end
 
+  defp do_transcribe_batch(_model, [], _opts), do: {:ok, []}
+
   defp do_transcribe_batch(%Model{ref: ref}, samples_list, opts) do
     case Native.transcribe_batch(ref, samples_list, build_transcribe_opts(opts)) do
       {:ok, payloads} ->
@@ -295,20 +295,16 @@ defmodule WhisperCt2 do
     end
   end
 
-  defp resolve_audios(audios) do
-    result =
-      Enum.reduce_while(audios, {:ok, []}, fn audio, {:ok, acc} ->
-        case resolve_audio(audio) do
-          {:ok, samples} -> {:cont, {:ok, [samples | acc]}}
-          {:error, _} = err -> {:halt, err}
-        end
-      end)
+  defp resolve_audios([]), do: {:ok, []}
 
-    case result do
-      {:ok, reversed} -> {:ok, Enum.reverse(reversed)}
-      err -> err
+  defp resolve_audios([audio | rest]) do
+    with {:ok, samples} <- resolve_audio(audio),
+         {:ok, rest_samples} <- resolve_audios(rest) do
+      {:ok, [samples | rest_samples]}
     end
   end
+
+  defp resolve_audios(_), do: {:error, Error.new(:invalid_request, "audios must be a proper list")}
 
   defp resolve_audio({:pcm_f32, samples}) when is_binary(samples) do
     cond do
@@ -419,7 +415,7 @@ defmodule WhisperCt2 do
 
   @spec validate_non_empty_string(String.t(), atom()) :: :ok | {:error, Error.t()}
   defp validate_non_empty_string(value, name) do
-    if String.trim(value) == "" do
+    if not String.valid?(value) or String.trim(value) == "" do
       {:error, Error.new(:invalid_request, "#{name} must be a non-empty string")}
     else
       :ok
@@ -468,7 +464,11 @@ defmodule WhisperCt2 do
 
   @spec validate_options(keyword(), map()) :: :ok | {:error, Error.t()}
   defp validate_options(opts, validators) do
-    Enum.reduce_while(opts, :ok, fn pair, :ok -> check_option(pair, validators) end)
+    if Keyword.keyword?(opts) do
+      Enum.reduce_while(opts, :ok, fn pair, :ok -> check_option(pair, validators) end)
+    else
+      {:error, Error.new(:invalid_request, "options must be a keyword list")}
+    end
   end
 
   defp check_option({key, value}, validators) do
@@ -491,30 +491,42 @@ defmodule WhisperCt2 do
   end
 
   defp valid_optional_string?(nil), do: true
-  defp valid_optional_string?(value) when is_binary(value), do: String.trim(value) != ""
+
+  defp valid_optional_string?(value) when is_binary(value),
+    do: String.valid?(value) and String.trim(value) != ""
+
   defp valid_optional_string?(_), do: false
 
-  # The NIF decodes integer options into fixed-width Rust types (`u32` /
-  # `i32`); Rustler raises ArgumentError for out-of-range values instead
-  # of returning {:error, _}, so the never-raises contract depends on
-  # range checks happening here.
+  # The NIF decodes numeric options into fixed-width Rust types (`u32`,
+  # `i32`, `f32`) and strings as UTF-8. Rustler raises for a value that
+  # does not fit instead of returning {:error, _}, so the never-raises
+  # contract depends on the checks here. An `f32` option decodes through
+  # `f64`, or `i64` for an integer term, and must stay finite as `f32`.
   @u32_max 4_294_967_295
   @i32_min -2_147_483_648
   @i32_max 2_147_483_647
+  @i64_min -9_223_372_036_854_775_808
+  @i64_max 9_223_372_036_854_775_807
+  @f32_max 3.402_823_466_385_288_6e38
 
   defp positive_u32?(v), do: is_integer(v) and v > 0 and v <= @u32_max
   defp non_neg_u32?(v), do: is_integer(v) and v >= 0 and v <= @u32_max
   defp i32?(v), do: is_integer(v) and v >= @i32_min and v <= @i32_max
-  defp number?(v), do: is_integer(v) or is_float(v)
+  defp number?(v) when is_float(v), do: v >= -@f32_max and v <= @f32_max
+  defp number?(v), do: is_integer(v) and v >= @i64_min and v <= @i64_max
   defp positive_number?(v), do: number?(v) and v > 0
   defp non_neg_number?(v), do: number?(v) and v >= 0
   defp repetition_penalty?(v), do: number?(v) and v >= 1
 
-  defp list_of_i32?(v) when is_list(v), do: Enum.all?(v, &i32?/1)
-  defp list_of_i32?(_), do: false
+  defp list_of_i32?(v), do: list_of?(v, &i32?/1)
 
   defp non_empty_list_of_device_indices?([_ | _] = v),
-    do: Enum.all?(v, &(is_integer(&1) and &1 >= 0 and &1 <= @i32_max))
+    do: list_of?(v, &(is_integer(&1) and &1 >= 0 and &1 <= @i32_max))
 
   defp non_empty_list_of_device_indices?(_), do: false
+
+  # `Enum.all?/2` raises on an improper list; this returns false instead.
+  defp list_of?([], _valid?), do: true
+  defp list_of?([head | tail], valid?), do: valid?.(head) and list_of?(tail, valid?)
+  defp list_of?(_, _valid?), do: false
 end
