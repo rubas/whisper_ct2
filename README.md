@@ -199,7 +199,10 @@ WhisperCt2.transcribe(model, {:pcm_f32, talk_pcm},
 
 `:initial_prompt` prepends free-text context (via `<|startofprev|>`) so the
 decoder is biased toward your domain vocabulary or speaker style;
-`:prefix` forces the start of the generated transcript.
+`:prefix` forces the start of the generated transcript. Like faster-whisper,
+the library keeps only the last `max_length / 2 - 1` tokens of the prompt and
+the first `max_length / 2 - 1` tokens of the prefix (223 each at the default
+`:max_length` of 448), so a long prompt cannot use up the output budget.
 
 ## Options
 

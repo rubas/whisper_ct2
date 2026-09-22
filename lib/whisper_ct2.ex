@@ -214,8 +214,9 @@ defmodule WhisperCt2 do
 
   - `:language` - ISO code (`"en"`). `nil` (default) auto-detects.
   - `:initial_prompt` - free-text context prepended via `<|startofprev|>`
-    to bias decoding.
-  - `:prefix` - forced text the generation must start with.
+    to bias decoding. Only its last `max_length / 2 - 1` tokens are used.
+  - `:prefix` - forced text the generation must start with. Only its first
+    `max_length / 2 - 1` tokens are used.
   - `:word_timestamps` - when `true`, attaches `:words` to each segment
     via one extra batched DTW alignment pass. Default `false`.
   - `:with_timestamps` - when `true` (default) the prompt asks the model

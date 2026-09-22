@@ -149,6 +149,18 @@ defmodule WhisperCt2.IntegrationTest do
     assert lang == "en"
   end
 
+  test "an initial_prompt longer than the model budget still transcribes",
+       %{model: model, audio: audio} do
+    # The prompt is about 900 tokens, far past the 448-position decoder.
+    # Without the faster-whisper bound on the prompt, CTranslate2 fails
+    # with "No position encodings are defined for positions >= 448".
+    assert {:ok, %Transcription{}} =
+             WhisperCt2.transcribe(model, audio,
+               language: "en",
+               initial_prompt: String.duplicate("Kennedy speaks. ", 300)
+             )
+  end
+
   test "rejects non-en :language on an English-only checkpoint",
        %{model: model, audio: audio} do
     # Decoding would silently run English (the `.en` SOT block is

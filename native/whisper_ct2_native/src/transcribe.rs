@@ -248,6 +248,7 @@ pub(crate) fn transcribe_many(
                 prefix: &prefix_tokens,
                 with_timestamps: emit_timestamps,
                 multilingual,
+                max_length: request.options.max_length,
             };
             prompts.push(parts.build());
         }
