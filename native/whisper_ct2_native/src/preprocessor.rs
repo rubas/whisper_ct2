@@ -191,6 +191,20 @@ impl Preprocessor {
         let mut frame_buf = vec![Complex32::default(); self.n_fft];
         let pad = self.n_fft / 2;
         let n_freq = self.n_fft / 2 + 1;
+        let mut power = vec![0.0_f64; n_freq];
+        // Each mel row is a narrow triangle, so the projection sums only the
+        // range from its first to its last non-zero weight. The skipped
+        // terms are exact zeros, so the sums stay bit-identical.
+        let bands: Vec<(usize, usize)> = self
+            .mel_filters
+            .rows()
+            .into_iter()
+            .map(|row| {
+                let start = row.iter().position(|&w| w != 0.0).unwrap_or(0);
+                let end = row.iter().rposition(|&w| w != 0.0).map_or(0, |k| k + 1);
+                (start, end)
+            })
+            .collect();
 
         let mut out = Vec::new();
         let mut max_log = f32::NEG_INFINITY;
@@ -209,12 +223,14 @@ impl Preprocessor {
                 }
                 fft.process_with_scratch(&mut frame_buf, &mut scratch);
 
-                for m in 0..self.feature_size {
+                for (p, bin) in power.iter_mut().zip(&frame_buf) {
+                    *p = f64::from(bin.re) * f64::from(bin.re)
+                        + f64::from(bin.im) * f64::from(bin.im);
+                }
+                for (m, &(start, end)) in bands.iter().enumerate() {
                     let mut sum = 0.0_f64;
-                    for (k, bin) in frame_buf.iter().take(n_freq).enumerate() {
-                        let power = f64::from(bin.re) * f64::from(bin.re)
-                            + f64::from(bin.im) * f64::from(bin.im);
-                        sum += self.mel_filters[(m, k)] * power;
+                    for k in start..end {
+                        sum += self.mel_filters[(m, k)] * power[k];
                     }
                     mel_chunk[(m, f)] = sum as f32;
                 }
@@ -522,6 +538,24 @@ mod tests {
             (first - (loud_max - 2.0)).abs() < 1e-5,
             "silent-chunk floor {first} must be loud-chunk max {loud_max} - 2.0"
         );
+    }
+
+    #[test]
+    fn build_chunks_floors_a_mel_row_whose_filter_is_all_zero() {
+        // An all-zero row has an empty band: its mel power is 0.0, which
+        // scales to the whole-audio floor, loud max - 2.0.
+        let mut preprocessor = tiny_preprocessor();
+        preprocessor.mel_filters.row_mut(1).fill(0.0);
+        let samples: Vec<f32> = (0..64).map(|i| 0.5 * (i as f32 * 0.7).sin()).collect();
+
+        let chunks = preprocessor.build_chunks(&samples).expect("build_chunks");
+        let loud_max = chunks[0].iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        for v in chunks[0].row(1) {
+            assert!(
+                (v - (loud_max - 2.0)).abs() < 1e-6,
+                "got {v}, max {loud_max}"
+            );
+        }
     }
 
     #[test]
