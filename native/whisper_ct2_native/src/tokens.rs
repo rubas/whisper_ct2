@@ -58,6 +58,11 @@ pub(crate) fn language_token(inner: &InnerTokenizer, code: &str) -> Result<Strin
     Ok(token)
 }
 
+/// Decoder positions of every Whisper checkpoint (`max_target_positions`
+/// in the Hugging Face config). faster-whisper uses the same constant as
+/// its `max_length`.
+const MAX_TARGET_POSITIONS: usize = 448;
+
 pub(crate) fn token_id(inner: &InnerTokenizer, token: &str) -> Result<u32> {
     inner
         .token_to_id(token)
@@ -86,7 +91,8 @@ pub(crate) fn encode_plain(tokenizer: &hf::Tokenizer, text: &str) -> Result<Vec<
 ///
 /// Like faster-whisper's `get_prompt`, `build` keeps only the last
 /// `max_length / 2 - 1` initial-prompt tokens and the first
-/// `max_length / 2 - 1` prefix tokens. CTranslate2 counts the prompt
+/// `max_length / 2 - 1` prefix tokens, with `max_length` capped at the
+/// decoder's [`MAX_TARGET_POSITIONS`]. CTranslate2 counts the prompt
 /// against `max_length`, so a longer prompt shortens the output budget
 /// until the transcript is cut off, empty, or an inference error.
 pub(crate) struct PromptParts<'a> {
@@ -108,7 +114,7 @@ pub(crate) struct PromptParts<'a> {
 
 impl PromptParts<'_> {
     pub(crate) fn build(&self) -> Vec<String> {
-        let keep = (self.max_length / 2).saturating_sub(1);
+        let keep = (self.max_length.min(MAX_TARGET_POSITIONS) / 2).saturating_sub(1);
         let initial_prompt = &self.initial_prompt[self.initial_prompt.len().saturating_sub(keep)..];
         let prefix = &self.prefix[..self.prefix.len().min(keep)];
         let mut out: Vec<String> = Vec::with_capacity(initial_prompt.len() + prefix.len() + 5);
@@ -539,6 +545,21 @@ mod tests {
         let p = parts(&[], &prefix, true, true, "<|en|>");
         let mut expected = vec![SOT.to_owned(), "<|en|>".to_owned(), TRANSCRIBE.to_owned()];
         expected.extend_from_slice(&prefix[..223]);
+        assert_eq!(p.build(), expected);
+    }
+
+    #[test]
+    fn prompt_keeps_last_223_initial_prompt_tokens_when_max_length_exceeds_448() {
+        // The decoder has 448 positions, so a larger `max_length` must not
+        // let a longer prompt through.
+        let initial = numbered(600);
+        let p = PromptParts {
+            max_length: 1000,
+            ..parts(&initial, &[], true, true, "<|en|>")
+        };
+        let mut expected = vec![STARTOFPREV.to_owned()];
+        expected.extend_from_slice(&initial[377..]);
+        expected.extend([SOT.to_owned(), "<|en|>".to_owned(), TRANSCRIBE.to_owned()]);
         assert_eq!(p.build(), expected);
     }
 

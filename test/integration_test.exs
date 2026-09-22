@@ -153,12 +153,19 @@ defmodule WhisperCt2.IntegrationTest do
        %{model: model, audio: audio} do
     # The prompt is about 900 tokens, far past the 448-position decoder.
     # Without the faster-whisper bound on the prompt, CTranslate2 fails
-    # with "No position encodings are defined for positions >= 448".
-    assert {:ok, %Transcription{}} =
-             WhisperCt2.transcribe(model, audio,
-               language: "en",
-               initial_prompt: String.duplicate("Kennedy speaks. ", 300)
-             )
+    # with "No position encodings are defined for positions >= 448", or
+    # the prompt uses up the output budget and the transcript is empty.
+    # A :max_length above 448 must not raise the bound.
+    for max_length <- [448, 1000] do
+      assert {:ok, %Transcription{text: text}} =
+               WhisperCt2.transcribe(model, audio,
+                 language: "en",
+                 initial_prompt: String.duplicate("Kennedy speaks. ", 300),
+                 max_length: max_length
+               )
+
+      assert normalised(text) =~ "ask not what your country can do for you"
+    end
   end
 
   test "rejects non-en :language on an English-only checkpoint",
