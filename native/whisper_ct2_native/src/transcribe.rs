@@ -192,7 +192,7 @@ pub(crate) fn transcribe_many(
         }
     }
 
-    let total_chunks: usize = per_audio_chunks.iter().map(Vec::len).sum();
+    let total_chunks: usize = chunk_counts.iter().sum();
     let n_mels = preprocessor.feature_size;
     let chunk_length = preprocessor.nb_max_frames;
 
@@ -208,6 +208,9 @@ pub(crate) fn transcribe_many(
             flat.extend_from_slice(slice);
         }
     }
+    // `flat` now holds every chunk; free the source copy before `encode`,
+    // which makes a third copy of its own.
+    drop(per_audio_chunks);
 
     let features = StorageView::new(
         &[total_chunks, n_mels, chunk_length],
@@ -236,9 +239,9 @@ pub(crate) fn transcribe_many(
     let emit_timestamps = request.with_timestamps || request.word_timestamps;
 
     let mut prompts: Vec<Vec<String>> = Vec::with_capacity(total_chunks);
-    for (audio_idx, chunks) in per_audio_chunks.iter().enumerate() {
+    for (audio_idx, &count) in chunk_counts.iter().enumerate() {
         let lang_token = &per_audio_languages[audio_idx];
-        for _ in 0..chunks.len() {
+        for _ in 0..count {
             let parts = PromptParts {
                 sot: SOT,
                 startofprev: STARTOFPREV,
@@ -249,6 +252,7 @@ pub(crate) fn transcribe_many(
                 prefix: &prefix_tokens,
                 with_timestamps: emit_timestamps,
                 multilingual,
+                max_length: request.options.max_length,
             };
             prompts.push(parts.build());
         }
@@ -281,8 +285,8 @@ pub(crate) fn transcribe_many(
     let chunk_duration_s = preprocessor.n_samples as f32 / preprocessor.sampling_rate as f32;
 
     let mut chunk_state: Vec<ChunkState> = Vec::with_capacity(total_chunks);
-    for (audio_idx, chunks) in per_audio_chunks.iter().enumerate() {
-        for within_audio_idx in 0..chunks.len() {
+    for (audio_idx, &count) in chunk_counts.iter().enumerate() {
+        for within_audio_idx in 0..count {
             let chunk_offset_s = within_audio_idx as f32 * chunk_duration_s;
             let global_idx = chunk_offsets[audio_idx] + within_audio_idx;
 
@@ -366,15 +370,21 @@ pub(crate) fn transcribe_many(
             let result = &generated[global_idx];
             // return_scores is forced on in the request, so a missing score
             // is a real bug — not something to paper over with 0.0.
-            let avg_logprob = *result.scores.first().ok_or_else(|| {
+            let score = *result.scores.first().ok_or_else(|| {
                 anyhow!("ct2 generation result is missing scores despite return_scores=true")
             })?;
+            let avg_logprob = avg_logprob(
+                score,
+                result.sequences_ids[0].len(),
+                request.options.length_penalty,
+            );
 
             for (sub_idx, sub) in subs.into_iter().enumerate() {
-                let text = decode_ids(tokenizer, &sub.text_token_ids)?
-                    .trim()
-                    .to_owned();
-                if text.is_empty() {
+                // Keep the decoded spacing: the leading space marks a word
+                // boundary, and CJK text has none. Elixir trims each
+                // segment and joins the raw texts into the transcript.
+                let text = decode_ids(tokenizer, &sub.text_token_ids)?;
+                if text.trim().is_empty() {
                     continue;
                 }
                 let words = if request.word_timestamps {
@@ -432,6 +442,18 @@ pub(crate) fn transcribe_many(
     }
 
     Ok(output)
+}
+
+/// Turns CTranslate2's hypothesis score into faster-whisper's
+/// `avg_logprob`. CTranslate2 divides the cumulative log probability
+/// (end-of-text included) by `seq_len ^ length_penalty`
+/// (`decoding.cc::finalize_hypothesis_score`); faster-whisper undoes that
+/// and divides by `seq_len + 1` (`transcribe.py`), so the value does not
+/// depend on `:length_penalty`. The math runs in `f64` like Python's, so
+/// `seq_len ^ length_penalty` does not overflow for large penalties.
+fn avg_logprob(score: f32, seq_len: usize, length_penalty: f32) -> f32 {
+    let seq_len = seq_len as f64;
+    (f64::from(score) * seq_len.powf(f64::from(length_penalty)) / (seq_len + 1.0)) as f32
 }
 
 fn detect_language(
@@ -561,9 +583,9 @@ fn encoder_frames_for_chunk(
 
 /// Wall-clock seconds of real audio inside chunk `chunk_idx` of a
 /// `samples_len`-sample audio — as opposed to the padded 30 s window.
-/// `split_sub_segments` uses this as its fallback segment end so the tail
-/// chunk of a 35 s audio ends at 35 s, not 60 s (faster-whisper bounds the
-/// same fallback by `content_frames - seek`).
+/// `split_sub_segments` bounds every timestamp and fallback segment end by
+/// it, so the tail chunk of a 35 s audio ends at 35 s, not 60 s
+/// (faster-whisper bounds the fallback by `content_frames - seek`).
 fn chunk_content_duration_s(
     samples_len: usize,
     chunk_idx: usize,
@@ -664,6 +686,30 @@ mod tests {
         // Tail past the end must clamp to a non-zero minimum so `align`
         // never sees `num_frames = 0` (which the DTW path would divide by).
         assert_eq!(encoder_frames_for_chunk(480_000, 5, &preprocessor), 1);
+    }
+
+    #[test]
+    fn avg_logprob_undoes_the_length_penalty_like_faster_whisper() {
+        // Cumulative log probability -60 over 100 generated tokens: the
+        // CTranslate2 score is -60 / 100^penalty, faster-whisper reports
+        // -60 / 101 for every penalty.
+        for penalty in [0.0_f32, 1.0, 2.0, -0.5] {
+            let score = -60.0 / 100_f32.powf(penalty);
+            let got = avg_logprob(score, 100, penalty);
+            assert!(
+                (got - -60.0 / 101.0).abs() < 1e-5,
+                "penalty {penalty}: {got}"
+            );
+        }
+    }
+
+    #[test]
+    fn avg_logprob_undoes_a_length_penalty_whose_power_overflows_f32() {
+        // 100^20 overflows f32 but not f64. The CTranslate2 score
+        // -60 / 100^20 is still a (subnormal) f32.
+        let score = (-60.0 / 100_f64.powi(20)) as f32;
+        let got = avg_logprob(score, 100, 20.0);
+        assert!((got - -60.0 / 101.0).abs() < 1e-4, "{got}");
     }
 
     #[test]

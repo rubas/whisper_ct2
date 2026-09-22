@@ -58,6 +58,11 @@ pub(crate) fn language_token(inner: &InnerTokenizer, code: &str) -> Result<Strin
     Ok(token)
 }
 
+/// Decoder positions of every Whisper checkpoint (`max_target_positions`
+/// in the Hugging Face config). faster-whisper uses the same constant as
+/// its `max_length`.
+const MAX_TARGET_POSITIONS: usize = 448;
+
 pub(crate) fn token_id(inner: &InnerTokenizer, token: &str) -> Result<u32> {
     inner
         .token_to_id(token)
@@ -83,6 +88,13 @@ pub(crate) fn encode_plain(tokenizer: &hf::Tokenizer, text: &str) -> Result<Vec<
 ///
 /// `with_timestamps` controls whether `<|notimestamps|>` is appended; when
 /// `false`, the model emits `<|t_..|>` tokens we parse back out.
+///
+/// Like faster-whisper's `get_prompt`, `build` keeps only the last
+/// `max_length / 2 - 1` initial-prompt tokens and the first
+/// `max_length / 2 - 1` prefix tokens, with `max_length` capped at the
+/// decoder's [`MAX_TARGET_POSITIONS`]. CTranslate2 counts the prompt
+/// against `max_length`, so a longer prompt shortens the output budget
+/// until the transcript is cut off, empty, or an inference error.
 pub(crate) struct PromptParts<'a> {
     pub(crate) sot: &'a str,
     pub(crate) startofprev: &'a str,
@@ -96,15 +108,19 @@ pub(crate) struct PromptParts<'a> {
     /// just `<|startoftranscript|>`. Multilingual checkpoints append the
     /// language and `<|transcribe|>` tokens, matching faster-whisper.
     pub(crate) multilingual: bool,
+    /// The `max_length` passed to `generate`.
+    pub(crate) max_length: usize,
 }
 
 impl PromptParts<'_> {
     pub(crate) fn build(&self) -> Vec<String> {
-        let mut out: Vec<String> =
-            Vec::with_capacity(self.initial_prompt.len() + self.prefix.len() + 5);
-        if !self.initial_prompt.is_empty() {
+        let keep = (self.max_length.min(MAX_TARGET_POSITIONS) / 2).saturating_sub(1);
+        let initial_prompt = &self.initial_prompt[self.initial_prompt.len().saturating_sub(keep)..];
+        let prefix = &self.prefix[..self.prefix.len().min(keep)];
+        let mut out: Vec<String> = Vec::with_capacity(initial_prompt.len() + prefix.len() + 5);
+        if !initial_prompt.is_empty() {
             out.push(self.startofprev.to_owned());
-            out.extend(self.initial_prompt.iter().cloned());
+            out.extend(initial_prompt.iter().cloned());
         }
         out.push(self.sot.to_owned());
         if self.multilingual {
@@ -114,7 +130,7 @@ impl PromptParts<'_> {
         if !self.with_timestamps {
             out.push(self.no_timestamps.to_owned());
         }
-        out.extend(self.prefix.iter().cloned());
+        out.extend(prefix.iter().cloned());
         out
     }
 }
@@ -149,8 +165,10 @@ pub(crate) struct SubSegment {
 ///
 /// `content_duration_s` is the wall-clock length of the real audio inside
 /// this chunk's window (≤ 30 s; the final chunk of an audio is usually
-/// shorter — faster-whisper's `content_frames - seek` bound). It is the
-/// fallback `end_in_chunk` whenever no closing timestamp exists,
+/// shorter — faster-whisper's `content_frames - seek` bound). It bounds
+/// every timestamp, so a pair the model places in the silent padding
+/// keeps its text as a zero-width sub-segment at the content end. It is
+/// also the fallback `end_in_chunk` whenever no closing timestamp exists,
 /// including the **unclosed pair** case: the model emitted
 /// `<|t_start|> text [EOT]` with no closing timestamp. Some fine-tunes
 /// (notably notebotIE Swiss-German) only reliably emit the opening
@@ -227,8 +245,8 @@ pub(crate) fn split_sub_segments(
 
         out.push(SubSegment {
             text_token_ids: token_ids[text_start..text_end].to_vec(),
-            start_in_chunk: timestamp_seconds(start_id, timestamp_begin),
-            end_in_chunk: timestamp_seconds(end_id, timestamp_begin),
+            start_in_chunk: timestamp_seconds(start_id, timestamp_begin).min(content_duration_s),
+            end_in_chunk: timestamp_seconds(end_id, timestamp_begin).min(content_duration_s),
         });
     }
     out
@@ -394,6 +412,25 @@ mod tests {
     }
 
     #[test]
+    fn split_sub_segments_clamps_closed_pair_past_content_end() {
+        // A closed pair hallucinated into the silent padding (10 s to
+        // 11 s on a 5 s tail) keeps its text at the content end.
+        let out = split_sub_segments(&[ts(500), 100, ts(550)], BEGIN, 5.0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].text_token_ids, vec![100]);
+        assert!((out[0].start_in_chunk - 5.0).abs() < 1e-6);
+        assert!((out[0].end_in_chunk - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn split_sub_segments_clamps_closed_pair_end_straddling_content_end() {
+        let out = split_sub_segments(&[ts(0), 100, ts(400)], BEGIN, 5.0);
+        assert_eq!(out.len(), 1);
+        assert!((out[0].start_in_chunk - 0.0).abs() < 1e-6);
+        assert!((out[0].end_in_chunk - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn split_sub_segments_drops_lone_dangling_start_timestamp() {
         // `<|t_start|>` immediately followed by EOT (no text) still
         // produces nothing — there is nothing to flush.
@@ -427,7 +464,12 @@ mod tests {
             prefix,
             with_timestamps,
             multilingual,
+            max_length: 448,
         }
+    }
+
+    fn numbered(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("t{i}")).collect()
     }
 
     #[test]
@@ -481,6 +523,56 @@ mod tests {
                 "The".to_owned(),
                 "topic".to_owned(),
             ]
+        );
+    }
+
+    #[test]
+    fn prompt_keeps_last_223_initial_prompt_tokens_at_max_length_448() {
+        // faster-whisper keeps `previous_tokens[-(max_length // 2 - 1):]`:
+        // the context closest to the audio survives.
+        let initial = numbered(600);
+        let p = parts(&initial, &[], true, true, "<|en|>");
+        let mut expected = vec![STARTOFPREV.to_owned()];
+        expected.extend_from_slice(&initial[377..]);
+        expected.extend([SOT.to_owned(), "<|en|>".to_owned(), TRANSCRIBE.to_owned()]);
+        assert_eq!(p.build(), expected);
+    }
+
+    #[test]
+    fn prompt_keeps_first_223_prefix_tokens_at_max_length_448() {
+        // faster-whisper keeps `prefix_tokens[: max_length // 2 - 1]`.
+        let prefix = numbered(600);
+        let p = parts(&[], &prefix, true, true, "<|en|>");
+        let mut expected = vec![SOT.to_owned(), "<|en|>".to_owned(), TRANSCRIBE.to_owned()];
+        expected.extend_from_slice(&prefix[..223]);
+        assert_eq!(p.build(), expected);
+    }
+
+    #[test]
+    fn prompt_keeps_last_223_initial_prompt_tokens_when_max_length_exceeds_448() {
+        // The decoder has 448 positions, so a larger `max_length` must not
+        // let a longer prompt through.
+        let initial = numbered(600);
+        let p = PromptParts {
+            max_length: 1000,
+            ..parts(&initial, &[], true, true, "<|en|>")
+        };
+        let mut expected = vec![STARTOFPREV.to_owned()];
+        expected.extend_from_slice(&initial[377..]);
+        expected.extend([SOT.to_owned(), "<|en|>".to_owned(), TRANSCRIBE.to_owned()]);
+        assert_eq!(p.build(), expected);
+    }
+
+    #[test]
+    fn prompt_drops_startofprev_when_max_length_leaves_no_prompt_budget() {
+        let initial = numbered(3);
+        let p = PromptParts {
+            max_length: 2,
+            ..parts(&initial, &[], true, true, "<|en|>")
+        };
+        assert_eq!(
+            p.build(),
+            vec![SOT.to_owned(), "<|en|>".to_owned(), TRANSCRIBE.to_owned()]
         );
     }
 }

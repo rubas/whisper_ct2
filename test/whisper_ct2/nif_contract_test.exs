@@ -74,16 +74,28 @@ defmodule WhisperCt2.NifContractTest do
              } = WhisperCt2.build_transcription(@nif_transcription)
     end
 
-    test "joins segment texts with a single space and trims" do
+    test "keeps the tokenizer's leading spaces between segments and trims each segment" do
       payload = %{
         @nif_transcription
         | segments: [
-            %{@nif_segment | text: "  hello"},
-            %{@nif_segment | text: "world  "}
+            %{@nif_segment | text: " And so"},
+            %{@nif_segment | text: " ask not"}
           ]
       }
 
-      assert %Transcription{text: "hello world"} = WhisperCt2.build_transcription(payload)
+      assert %Transcription{
+               text: "And so ask not",
+               segments: [%Segment{text: "And so"}, %Segment{text: "ask not"}]
+             } = WhisperCt2.build_transcription(payload)
+    end
+
+    test "joins CJK segment texts without inserting a space" do
+      payload = %{
+        @nif_transcription
+        | segments: [%{@nif_segment | text: "你好"}, %{@nif_segment | text: "世界"}]
+      }
+
+      assert %Transcription{text: "你好世界"} = WhisperCt2.build_transcription(payload)
     end
   end
 end
