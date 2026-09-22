@@ -191,7 +191,7 @@ pub(crate) fn transcribe_many(
         }
     }
 
-    let total_chunks: usize = per_audio_chunks.iter().map(Vec::len).sum();
+    let total_chunks: usize = chunk_counts.iter().sum();
     let n_mels = preprocessor.feature_size;
     let chunk_length = preprocessor.nb_max_frames;
 
@@ -207,6 +207,9 @@ pub(crate) fn transcribe_many(
             flat.extend_from_slice(slice);
         }
     }
+    // `flat` now holds every chunk; free the source copy before `encode`,
+    // which makes a third copy of its own.
+    drop(per_audio_chunks);
 
     let features = StorageView::new(
         &[total_chunks, n_mels, chunk_length],
@@ -235,9 +238,9 @@ pub(crate) fn transcribe_many(
     let emit_timestamps = request.with_timestamps || request.word_timestamps;
 
     let mut prompts: Vec<Vec<String>> = Vec::with_capacity(total_chunks);
-    for (audio_idx, chunks) in per_audio_chunks.iter().enumerate() {
+    for (audio_idx, &count) in chunk_counts.iter().enumerate() {
         let lang_token = &per_audio_languages[audio_idx];
-        for _ in 0..chunks.len() {
+        for _ in 0..count {
             let parts = PromptParts {
                 sot: SOT,
                 startofprev: STARTOFPREV,
@@ -281,8 +284,8 @@ pub(crate) fn transcribe_many(
     let chunk_duration_s = preprocessor.n_samples as f32 / preprocessor.sampling_rate as f32;
 
     let mut chunk_state: Vec<ChunkState> = Vec::with_capacity(total_chunks);
-    for (audio_idx, chunks) in per_audio_chunks.iter().enumerate() {
-        for within_audio_idx in 0..chunks.len() {
+    for (audio_idx, &count) in chunk_counts.iter().enumerate() {
+        for within_audio_idx in 0..count {
             let chunk_offset_s = within_audio_idx as f32 * chunk_duration_s;
             let global_idx = chunk_offsets[audio_idx] + within_audio_idx;
 
