@@ -23,7 +23,7 @@ jobs:
     name: Resolve release target
     runs-on: ubuntu-24.04
     permissions:
-      contents: read # read mix.exs, native.ex, and git history
+      contents: read # read mix.exs, native.ex, and the tags
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-detect
       cancel-in-progress: false
@@ -31,12 +31,14 @@ jobs:
       should_release: ${{ steps.resolve.outputs.should_release }}
       tag: ${{ steps.resolve.outputs.tag }}
       version: ${{ steps.resolve.outputs.version }}
-      tag_exists: ${{ steps.resolve.outputs.tag_exists }}
       sha: ${{ steps.resolve.outputs.sha }}
       nif_version: ${{ steps.resolve.outputs.nif_version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # A dispatch builds the requested tag, so the checkout fails when
+          # that tag does not exist.
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -46,40 +48,28 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_TAG: ${{ inputs.tag }}
-          TRIGGER_SHA: ${{ github.sha }}
         run: |
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            TAG="$INPUT_TAG"
-            VERSION="${TAG#v}"
-            SHOULD_RELEASE=true
-          else
-            VERSION="$(sed -n 's/^  @version "\([^"]*\)"$/\1/p' mix.exs | head -n1)"
-            # The root commit has no parent; guard HEAD^ so `set -eo pipefail`
-            # does not abort the step on the very first commit of the repo.
-            if git rev-parse -q --verify "HEAD^" >/dev/null; then
-              PREVIOUS_VERSION="$(git show HEAD^:mix.exs 2>/dev/null | sed -n 's/^  @version "\([^"]*\)"$/\1/p' | head -n1)"
-            else
-              PREVIOUS_VERSION=""
-            fi
+          VERSION="$(sed -n 's/^  @version "\([^"]*\)"$/\1/p' mix.exs | head -n1)"
+          if [ -z "$VERSION" ]; then
+            echo "Failed to read current mix.exs version" >&2
+            exit 1
+          fi
+          TAG="v$VERSION"
 
-            if [ -z "$VERSION" ]; then
-              echo "Failed to read current mix.exs version" >&2
+          # A push decides from the tag, not from HEAD^: it releases whenever
+          # tag v<version> is missing. A push whose last commit is not the
+          # bump still releases, and a dropped run releases on the next push
+          # to main.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$TAG" != "$INPUT_TAG" ]; then
+              echo "Tag $INPUT_TAG has @version $VERSION in mix.exs" >&2
               exit 1
             fi
-
-            TAG="v$VERSION"
-
-            if [ "$VERSION" = "$PREVIOUS_VERSION" ]; then
-              SHOULD_RELEASE=false
-            else
-              SHOULD_RELEASE=true
-            fi
-          fi
-
-          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            TAG_EXISTS=true
+            SHOULD_RELEASE=true
+          elif git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            SHOULD_RELEASE=false
           else
-            TAG_EXISTS=false
+            SHOULD_RELEASE=true
           fi
 
           # Single source of truth for the NIF version: parse it from the
@@ -96,8 +86,7 @@ jobs:
           echo "should_release=$SHOULD_RELEASE" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag_exists=$TAG_EXISTS" >> "$GITHUB_OUTPUT"
-          echo "sha=$TRIGGER_SHA" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "nif_version=$NIF_VERSION" >> "$GITHUB_OUTPUT"
 
   build:
@@ -242,8 +231,10 @@ jobs:
   tag:
     name: Create release tag
     runs-on: ubuntu-24.04
-    needs: detect
-    if: github.event_name == 'push' && needs.detect.outputs.should_release == 'true' && needs.detect.outputs.tag_exists != 'true'
+    # Push the tag only after every artefact builds. A failed build then
+    # leaves no tag, and the next push to main releases the version.
+    needs: [detect, build]
+    if: github.event_name == 'push' && needs.detect.outputs.should_release == 'true'
     permissions:
       contents: write # push the release tag
     concurrency:
@@ -302,7 +293,6 @@ jobs:
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3 # zizmor: ignore[superfluous-actions]
         with:
           tag_name: ${{ needs.detect.outputs.tag }}
-          target_commitish: ${{ needs.detect.outputs.sha }}
           files: |
             artifacts/*.tar.gz
             artifacts/SHA256SUMS

@@ -31,8 +31,9 @@ use crate::tokens::{
 /// at the standard tiny config (80 mel × 3000 frames × 4 B) one chunk is
 /// 960 kB, so 2 GiB tolerates ~2200 chunks ≈ 18 h of audio in one call.
 /// Enforced by [`validate_feature_budget`] from sample counts alone, before
-/// any mel chunk is allocated.
-const MAX_FEATURE_BUFFER_BYTES: usize = 2 * 1024 * 1024 * 1024;
+/// any mel chunk is allocated. `Preprocessor::load` applies the same cap to
+/// the per-chunk pad buffer and the filterbank.
+pub(crate) const MAX_FEATURE_BUFFER_BYTES: usize = 2 * 1024 * 1024 * 1024;
 
 /// Validates the projected flat mel buffer for a batch against
 /// [`MAX_FEATURE_BUFFER_BYTES`] using sample counts alone, so an oversized
