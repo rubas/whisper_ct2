@@ -3,18 +3,19 @@
 ## 0.7.0 - 2026-09-23
 
 Fixes the audit findings #55 to #65, #67 and #74, and moves the
-precompiled NIFs to CTranslate2 4.8.2. Two changes are visible to callers,
-so this is a minor release: `Transcription.text` joins segments without a
+precompiled NIFs to CTranslate2 4.8.2. Two changes break callers, so this
+is a minor release: `Transcription.text` joins segments without a
 separator, and `Segment.avg_logprob` no longer scales with
 `:length_penalty`.
 
 ### Changed
 
 - **Breaking:** `Transcription.text` no longer inserts a space between
-  segments. The NIF keeps the tokenizer's spacing, so CJK transcripts and
-  words split at a segment boundary now join correctly. English output
-  does not change. Callers that split `text` on the old separator must use
-  `:segments` instead. (#57)
+  segments. The NIF keeps the tokenizer's spacing, so CJK transcripts get
+  no extra spaces, and a word or punctuation mark split at a segment
+  boundary joins: the segments `" inter"` and `"national"` now give
+  `international`, not `inter national`. Callers that split `text` on the
+  old separator must use `:segments` instead. (#57)
 - **Breaking:** `Segment.avg_logprob` uses the faster-whisper formula: the
   mean log probability per generated token, end-of-text included. It no
   longer depends on `:length_penalty`. At the default penalty, values move
@@ -28,14 +29,16 @@ separator, and `Segment.avg_logprob` no longer scales with
 - ct2rs 0.10.0 -> 0.10.1. The precompiled NIFs now vendor CTranslate2
   4.8.2, which adds StorageView bounds and allocation size checks, and
   oneDNN 3.13.2.
-- Source builds require Rust 1.98 or later. The crate declares
+- Source builds require Rust 1.98 or later (was 1.91). The crate declares
   `rust-version = "1.98"`. Precompiled installs do not change.
+- The precompiled NIFs build with `codegen-units = 16` (was 1) and keep
+  thin LTO. (#51)
 - Mel preprocessing is about 9 to 14 times faster. The output is
   bit-identical. (#67)
 - Transcription frees the mel chunks before the encoder runs, which lowers
   peak memory for long audio and large batches. (#58)
-- CI uses Elixir 1.20.4, OTP 29.1.1 and Rust 1.98.1. `mix.exs` keeps
-  `elixir: "~> 1.17"` as the minimum version.
+- CI uses Elixir 1.20.4, OTP 29.1.1, Rust 1.98.1 and zizmor 1.30.1.
+  `mix.exs` keeps `elixir: "~> 1.17"` as the minimum version.
 - The release workflow decides from the `v<version>` tag whether a version
   is released, and a manual dispatch builds from the tag it gets. See
   `docs/release.md`.
