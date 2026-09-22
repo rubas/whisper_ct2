@@ -448,10 +448,11 @@ pub(crate) fn transcribe_many(
 /// (end-of-text included) by `seq_len ^ length_penalty`
 /// (`decoding.cc::finalize_hypothesis_score`); faster-whisper undoes that
 /// and divides by `seq_len + 1` (`transcribe.py`), so the value does not
-/// depend on `:length_penalty`.
+/// depend on `:length_penalty`. The math runs in `f64` like Python's, so
+/// `seq_len ^ length_penalty` does not overflow for large penalties.
 fn avg_logprob(score: f32, seq_len: usize, length_penalty: f32) -> f32 {
-    let seq_len = seq_len as f32;
-    score * seq_len.powf(length_penalty) / (seq_len + 1.0)
+    let seq_len = seq_len as f64;
+    (f64::from(score) * seq_len.powf(f64::from(length_penalty)) / (seq_len + 1.0)) as f32
 }
 
 fn detect_language(
@@ -699,6 +700,15 @@ mod tests {
                 "penalty {penalty}: {got}"
             );
         }
+    }
+
+    #[test]
+    fn avg_logprob_undoes_a_length_penalty_whose_power_overflows_f32() {
+        // 100^20 overflows f32 but not f64. The CTranslate2 score
+        // -60 / 100^20 is still a (subnormal) f32.
+        let score = (-60.0 / 100_f64.powi(20)) as f32;
+        let got = avg_logprob(score, 100, 20.0);
+        assert!((got - -60.0 / 101.0).abs() < 1e-4, "{got}");
     }
 
     #[test]
