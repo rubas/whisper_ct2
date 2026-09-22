@@ -565,6 +565,50 @@ mod tests {
     }
 
     #[test]
+    fn build_chunks_band_projection_equals_the_dense_projection_bit_for_bit() {
+        // Rows whose first or last non-zero weight sits on a band edge:
+        // one bin at DC, one bin at Nyquist, both edges, and an interior
+        // band. A band that drops an edge weight changes these sums.
+        let mut preprocessor = tiny_preprocessor();
+        preprocessor.feature_size = 4;
+        preprocessor.mel_filters = ndarray::array![
+            [1.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 1.0],
+            [0.5, 0.0, 0.0, 0.0, 0.25],
+            [0.0, 0.3, 0.7, 0.0, 0.0],
+        ];
+        let samples: Vec<f32> = (0..64)
+            .map(|i| 0.3 + 0.2 * (-1.0_f32).powi(i) + 0.4 * (i as f32 * 0.7).sin())
+            .collect();
+
+        let window = hann_window(preprocessor.n_fft);
+        let fft = preprocessor.fft();
+        let padded = reflect_pad_chunk(&samples, preprocessor.n_samples, preprocessor.n_fft / 2);
+        let mut dense = Array2::<f32>::zeros((4, preprocessor.nb_max_frames));
+        for f in 0..preprocessor.nb_max_frames {
+            let start = f * preprocessor.hop_length;
+            let mut frame: Vec<Complex32> = (0..preprocessor.n_fft)
+                .map(|i| Complex32::new(padded[start + i] * window[i], 0.0))
+                .collect();
+            fft.process(&mut frame);
+            for (m, row) in preprocessor.mel_filters.rows().into_iter().enumerate() {
+                let mut sum = 0.0_f64;
+                for (w, bin) in row.iter().zip(&frame) {
+                    sum += w
+                        * (f64::from(bin.re) * f64::from(bin.re)
+                            + f64::from(bin.im) * f64::from(bin.im));
+                }
+                dense[(m, f)] = sum as f32;
+            }
+        }
+        let max_log = log_mel(&mut dense);
+        scale_log_mel(&mut dense, max_log);
+
+        let chunks = preprocessor.build_chunks(&samples).expect("build_chunks");
+        assert_eq!(chunks, vec![dense]);
+    }
+
+    #[test]
     fn reflect_pad_chunk_mirrors_edges_without_repeating_them() {
         // np.pad 'reflect' convention: the edge sample itself is not
         // repeated. Left pad reads chunk[pad], .., chunk[1]; the body is
