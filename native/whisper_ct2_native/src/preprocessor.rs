@@ -90,13 +90,16 @@ impl Preprocessor {
                     path.display()
                 ));
             }
-            Array2::from_shape_vec((n_rows, n_cols), rows.into_iter().flatten().collect())
-                .with_context(|| {
-                    format!(
-                        "mel_filters rows have inconsistent lengths in {}",
-                        path.display()
-                    )
-                })?
+            // `from_shape_vec` checks only the total length, so rows whose
+            // lengths balance out would be re-cut at the wrong boundaries.
+            if let Some((i, row)) = rows.iter().enumerate().find(|(_, row)| row.len() != n_cols) {
+                return Err(anyhow!(
+                    "mel_filters row {i} has {} columns, expected n_fft / 2 + 1 = {n_cols} in {}",
+                    row.len(),
+                    path.display()
+                ));
+            }
+            Array2::from_shape_vec((n_rows, n_cols), rows.into_iter().flatten().collect())?
         } else {
             mel(
                 aux.sampling_rate as f64,
@@ -582,6 +585,28 @@ mod tests {
 
         let err = Preprocessor::load(dir.path()).expect_err("ragged rows must fail at load");
         assert!(format!("{err:#}").contains("mel_filters"));
+    }
+
+    #[test]
+    fn load_rejects_ragged_mel_filters_rows_whose_lengths_balance_naming_the_row() {
+        // Rows of 5, 4 and 6 total 15 = 3 x 5, so a flatten-and-reshape
+        // would accept them and shift the coefficients across rows.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = base_config();
+        config["feature_size"] = serde_json::json!(3);
+        config["mel_filters"] = serde_json::json!([
+            [1.0, 1.0, 1.0, 1.0, 1.0],
+            [2.0, 2.0, 2.0, 2.0],
+            [3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
+        ]);
+        write_config(dir.path(), &config.to_string());
+
+        let err = Preprocessor::load(dir.path()).expect_err("balanced ragged rows must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("mel_filters row 1 has 4 columns"),
+            "got: {msg}"
+        );
     }
 
     #[test]
