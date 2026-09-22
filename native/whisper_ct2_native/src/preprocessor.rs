@@ -27,6 +27,7 @@ use rustfft::{Fft, FftPlanner};
 use serde::Deserialize;
 
 use crate::errors::invalid_request;
+use crate::transcribe::MAX_FEATURE_BUFFER_BYTES;
 
 const PREPROCESSOR_CONFIG_FILE: &str = "preprocessor_config.json";
 
@@ -75,6 +76,42 @@ impl Preprocessor {
         ] {
             if value == 0 {
                 return Err(anyhow!("{field} must be positive in {}", path.display()));
+            }
+        }
+
+        // Whisper derives `nb_max_frames` from `n_samples`. A larger
+        // `n_samples` would drop the audio past the last frame of each chunk.
+        let frames = aux.n_samples / aux.hop_length;
+        if aux.nb_max_frames != frames {
+            return Err(anyhow!(
+                "nb_max_frames {} must equal n_samples / hop_length = {frames} in {}",
+                aux.nb_max_frames,
+                path.display()
+            ));
+        }
+
+        // The pad buffer of each chunk and the filterbank are allocated
+        // before any request budget applies, and a failed allocation aborts
+        // the VM instead of unwinding.
+        for (buffer, bytes) in [
+            (
+                "n_samples + 2 * (n_fft / 2) f32 padded chunk",
+                aux.n_samples
+                    .checked_add(aux.n_fft / 2 * 2)
+                    .and_then(|n| n.checked_mul(size_of::<f32>())),
+            ),
+            (
+                "feature_size x (n_fft / 2 + 1) f64 mel filterbank",
+                aux.feature_size
+                    .checked_mul(aux.n_fft / 2 + 1)
+                    .and_then(|n| n.checked_mul(size_of::<f64>())),
+            ),
+        ] {
+            if bytes.is_none_or(|b| b > MAX_FEATURE_BUFFER_BYTES) {
+                return Err(anyhow!(
+                    "{buffer} exceeds the {MAX_FEATURE_BUFFER_BYTES} byte cap in {}",
+                    path.display()
+                ));
             }
         }
 
@@ -551,6 +588,63 @@ mod tests {
             let err = Preprocessor::load(dir.path()).expect_err("zero field must fail at load");
             let msg = format!("{err:#}");
             assert!(msg.contains(field), "error must name {field}, got: {msg}");
+        }
+    }
+
+    #[test]
+    fn load_rejects_nb_max_frames_other_than_n_samples_over_hop_length() {
+        // 128 / 4 = 32 frames, but only 16 are configured: each chunk
+        // would silently drop its second half.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = base_config();
+        config["n_samples"] = serde_json::json!(128);
+        write_config(dir.path(), &config.to_string());
+
+        let err = Preprocessor::load(dir.path()).expect_err("frame mismatch must fail at load");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("nb_max_frames 16 must equal n_samples / hop_length = 32"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_rejects_buffers_over_the_feature_byte_cap_naming_the_buffer() {
+        // Each config passes the zero and frame checks, so only the byte
+        // cap stops it before the allocation.
+        for (overrides, buffer) in [
+            // 1.6e11 samples: a 640 GB pad buffer per chunk.
+            (
+                serde_json::json!({
+                    "n_samples": 160_000_000_000_usize,
+                    "hop_length": 10_000_000_000_usize,
+                }),
+                "padded chunk",
+            ),
+            // n_samples + 2 * (n_fft / 2) overflows usize.
+            (
+                serde_json::json!({"n_samples": usize::MAX, "hop_length": usize::MAX / 16}),
+                "padded chunk",
+            ),
+            // 1e8 x 5 f64: a 4 GB synthesised filterbank.
+            (
+                serde_json::json!({"feature_size": 100_000_000}),
+                "mel filterbank",
+            ),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let mut config = base_config();
+            for (field, value) in overrides.as_object().expect("overrides object") {
+                config[field] = value.clone();
+            }
+            write_config(dir.path(), &config.to_string());
+
+            let err = Preprocessor::load(dir.path()).expect_err("oversized config must fail");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains(buffer) && msg.contains("byte cap"),
+                "error must name the {buffer}, got: {msg}"
+            );
         }
     }
 
