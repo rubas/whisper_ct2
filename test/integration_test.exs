@@ -292,6 +292,38 @@ defmodule WhisperCt2.IntegrationTest do
     end
   end
 
+  describe "non-finite decoder scores" do
+    # CTranslate2 divides the score by seq_len ^ length_penalty in f32. An
+    # extreme penalty makes the score or its undo infinite or NaN, and
+    # Rustler raises ArgumentError when it encodes such a float.
+
+    test "an overflowing :length_penalty returns an inference_error", %{model: model} do
+      for penalty <- [-1.0e30, 1.0e30] do
+        assert {:error, %WhisperCt2.Error{reason: :inference_error, message: msg}} =
+                 WhisperCt2.transcribe(model, {:pcm_f32, silent_pcm(16_000)},
+                   length_penalty: penalty,
+                   max_length: 5
+                 )
+
+        assert msg =~ "avg_logprob is not finite"
+      end
+    end
+
+    test "an empty hypothesis at the default :length_penalty returns no segments",
+         %{model: model} do
+      # Suppressing every token except EOT (50256) forces an immediate EOT.
+      # The empty hypothesis scores -inf, but it yields no segment to encode.
+      eot = 50_256
+
+      assert {:ok, %Transcription{text: "", segments: []}} =
+               WhisperCt2.transcribe(model, {:pcm_f32, silent_pcm(16_000)},
+                 with_timestamps: false,
+                 suppress_blank: false,
+                 suppress_tokens: Enum.to_list(0..(eot - 1)) ++ Enum.to_list((eot + 1)..51_863)
+               )
+    end
+  end
+
   describe "segment ends stay within the audio" do
     test "with_timestamps: false bounds the fallback segment to the real audio length",
          %{model: model, audio_pcm: full_pcm} do

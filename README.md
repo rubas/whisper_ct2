@@ -218,7 +218,7 @@ position count, so a long prompt cannot use up the output budget.
 | `:with_timestamps`             | `boolean`           | Emit `<\|t_..\|>` segment timestamps (default `true`). `false` for fine-tunes that emit plain text. |
 | `:beam_size`                   | `pos_integer`       | Beam-search width.                                     |
 | `:patience`                    | `float`             | Beam-search patience.                                  |
-| `:length_penalty`              | `float`             | Decoding length penalty.                               |
+| `:length_penalty`              | `float`             | Decoding length penalty. A value that puts the decoder score out of `f32` range returns `:inference_error`. |
 | `:repetition_penalty`          | `float`             | Decoding repetition penalty.                           |
 | `:no_repeat_ngram_size`        | `non_neg_integer`   | Disallow repeated n-grams of this size.                |
 | `:sampling_temperature`        | `float`             | Sampling temperature.                                  |

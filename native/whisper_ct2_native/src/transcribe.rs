@@ -373,11 +373,8 @@ pub(crate) fn transcribe_many(
             let score = *result.scores.first().ok_or_else(|| {
                 anyhow!("ct2 generation result is missing scores despite return_scores=true")
             })?;
-            let avg_logprob = avg_logprob(
-                score,
-                result.sequences_ids[0].len(),
-                request.options.length_penalty,
-            );
+            let length_penalty = request.options.length_penalty;
+            let avg_logprob = avg_logprob(score, result.sequences_ids[0].len(), length_penalty);
 
             for (sub_idx, sub) in subs.into_iter().enumerate() {
                 // Keep the decoded spacing: the leading space marks a word
@@ -387,6 +384,12 @@ pub(crate) fn transcribe_many(
                 if text.trim().is_empty() {
                     continue;
                 }
+                // Check only what a segment encodes: an empty hypothesis
+                // can have a non-finite score, but it yields no segment.
+                let avg_logprob = finite("avg_logprob", avg_logprob).with_context(|| {
+                    format!("decoder score {score} with length_penalty {length_penalty}")
+                })?;
+                let no_speech_prob = finite("no_speech_prob", result.no_speech_prob)?;
                 let words = if request.word_timestamps {
                     let aligned_chunk = words_per_chunk.get(global_idx).ok_or_else(|| {
                         anyhow!(
@@ -404,13 +407,15 @@ pub(crate) fn transcribe_many(
                     })?;
                     Some(
                         ws.iter()
-                            .map(|w| WordResult {
-                                text: w.text.clone(),
-                                start: w.start,
-                                end: w.end,
-                                probability: w.probability,
+                            .map(|w| {
+                                Ok(WordResult {
+                                    text: w.text.clone(),
+                                    start: w.start,
+                                    end: w.end,
+                                    probability: finite("word probability", w.probability)?,
+                                })
                             })
-                            .collect::<Vec<_>>(),
+                            .collect::<Result<Vec<_>>>()?,
                     )
                 } else {
                     None
@@ -420,7 +425,7 @@ pub(crate) fn transcribe_many(
                     text,
                     start: chunk_offset_s + sub.start_in_chunk,
                     end: chunk_offset_s + sub.end_in_chunk,
-                    no_speech_prob: result.no_speech_prob,
+                    no_speech_prob,
                     avg_logprob,
                     tokens: sub.text_token_ids,
                     words,
@@ -454,6 +459,18 @@ pub(crate) fn transcribe_many(
 fn avg_logprob(score: f32, seq_len: usize, length_penalty: f32) -> f32 {
     let seq_len = seq_len as f64;
     (f64::from(score) * seq_len.powf(f64::from(length_penalty)) / (seq_len + 1.0)) as f32
+}
+
+/// Passes a float derived from CTranslate2 output. Rustler encodes an `f32` with
+/// `enif_make_double`, which raises `badarg` for NaN or infinity, so a
+/// non-finite value becomes an `inference_error` here instead. Times and
+/// durations need no check: they are integer counts times finite constants.
+fn finite(name: &str, value: f32) -> Result<f32> {
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(anyhow!("{name} is not finite ({value})"))
+    }
 }
 
 fn detect_language(
@@ -710,6 +727,21 @@ mod tests {
         let score = (-60.0 / 100_f64.powi(20)) as f32;
         let got = avg_logprob(score, 100, 20.0);
         assert!((got - -60.0 / 101.0).abs() < 1e-4, "{got}");
+    }
+
+    #[test]
+    fn finite_rejects_the_avg_logprob_of_an_overflowing_length_penalty() {
+        // CTranslate2's f32 math turns cum_logprob / 100^1e30 into -0.0
+        // and cum_logprob / 100^-1e30 into -inf; undoing either penalty
+        // gives NaN or -inf, which Rustler cannot encode.
+        for (score, penalty) in [(-0.0_f32, 1.0e30_f32), (f32::NEG_INFINITY, -1.0e30)] {
+            let err = finite("avg_logprob", avg_logprob(score, 100, penalty)).unwrap_err();
+            assert!(
+                err.to_string().starts_with("avg_logprob is not finite"),
+                "{err}"
+            );
+            assert_eq!(crate::errors::kind_from_chain(&err), None);
+        }
     }
 
     #[test]
