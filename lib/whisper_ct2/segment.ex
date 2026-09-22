@@ -6,8 +6,10 @@ defmodule WhisperCt2.Segment do
   text-token ID list (timestamp tokens stripped); useful for diarization or
   custom decoding. `no_speech_prob` is the no-speech probability of the
   parent 30 s chunk, repeated on every segment in that chunk. `avg_logprob`
-  is the sequence-level average log probability returned by CTranslate2 -
-  filter at e.g. `avg_logprob < -1.0` to reject low-confidence hallucination.
+  is the mean log probability per generated token of the chunk, end-of-text
+  included, as faster-whisper computes it. It does not depend on
+  `:length_penalty`. Filter at e.g. `avg_logprob < -1.0` to reject
+  low-confidence hallucination.
   `words` is `nil` unless `:word_timestamps` was set on the transcribe call;
   when present it carries one `%WhisperCt2.Word{}` per Whisper word with its
   own time span.

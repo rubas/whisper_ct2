@@ -366,9 +366,14 @@ pub(crate) fn transcribe_many(
             let result = &generated[global_idx];
             // return_scores is forced on in the request, so a missing score
             // is a real bug — not something to paper over with 0.0.
-            let avg_logprob = *result.scores.first().ok_or_else(|| {
+            let score = *result.scores.first().ok_or_else(|| {
                 anyhow!("ct2 generation result is missing scores despite return_scores=true")
             })?;
+            let avg_logprob = avg_logprob(
+                score,
+                result.sequences_ids[0].len(),
+                request.options.length_penalty,
+            );
 
             for (sub_idx, sub) in subs.into_iter().enumerate() {
                 let text = decode_ids(tokenizer, &sub.text_token_ids)?
@@ -432,6 +437,17 @@ pub(crate) fn transcribe_many(
     }
 
     Ok(output)
+}
+
+/// Turns CTranslate2's hypothesis score into faster-whisper's
+/// `avg_logprob`. CTranslate2 divides the cumulative log probability
+/// (end-of-text included) by `seq_len ^ length_penalty`
+/// (`decoding.cc::finalize_hypothesis_score`); faster-whisper undoes that
+/// and divides by `seq_len + 1` (`transcribe.py`), so the value does not
+/// depend on `:length_penalty`.
+fn avg_logprob(score: f32, seq_len: usize, length_penalty: f32) -> f32 {
+    let seq_len = seq_len as f32;
+    score * seq_len.powf(length_penalty) / (seq_len + 1.0)
 }
 
 fn detect_language(
@@ -664,6 +680,21 @@ mod tests {
         // Tail past the end must clamp to a non-zero minimum so `align`
         // never sees `num_frames = 0` (which the DTW path would divide by).
         assert_eq!(encoder_frames_for_chunk(480_000, 5, &preprocessor), 1);
+    }
+
+    #[test]
+    fn avg_logprob_undoes_the_length_penalty_like_faster_whisper() {
+        // Cumulative log probability -60 over 100 generated tokens: the
+        // CTranslate2 score is -60 / 100^penalty, faster-whisper reports
+        // -60 / 101 for every penalty.
+        for penalty in [0.0_f32, 1.0, 2.0, -0.5] {
+            let score = -60.0 / 100_f32.powf(penalty);
+            let got = avg_logprob(score, 100, penalty);
+            assert!(
+                (got - -60.0 / 101.0).abs() < 1e-5,
+                "penalty {penalty}: {got}"
+            );
+        }
     }
 
     #[test]
