@@ -29,7 +29,7 @@ Set `WHISPER_CT2_BUILD=1` in your environment (or
 project) to compile from source instead. The first source build of CTranslate2
 takes ~10 minutes and requires:
 
-- Rust toolchain (`rustup`, stable)
+- Rust 1.98 or later (`rustup`)
 - `cmake`, a C++17 compiler, `make`
 - Linux: `libstdc++`, `libgomp` available at link time
 - CUDA toolkit 12+ if building with `cuda` or `cuda-dynamic` features
