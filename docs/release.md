@@ -20,10 +20,12 @@ x86_64 Linux, and `WHISPER_CT2_BUILD=1` forces a source build instead.
 
 1. Bump `@version` in `mix.exs`, add the `CHANGELOG.md` entry, and push to
    `main`.
-2. The workflow compares `@version` against the previous commit. On a bump it
-   builds every artefact, pushes the `v<version>` tag, and uploads the
-   tarballs plus `SHA256SUMS` to a new GitHub release. Pushing a tag by hand
-   triggers nothing.
+2. On every push to `main`, the workflow releases when the `v<version>` tag
+   for `@version` does not exist yet. It builds every artefact, pushes the
+   tag, and uploads the tarballs plus `SHA256SUMS` to a new GitHub release. A
+   run that stops before it pushes the tag loses nothing: the next push to
+   `main` releases the version. Do not push the tag by hand: the workflow
+   then treats the version as released and builds nothing.
 3. Once the assets are up, regenerate the checksum file locally:
 
    ```bash
