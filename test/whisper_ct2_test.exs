@@ -82,6 +82,13 @@ defmodule WhisperCt2Test do
                ])
     end
 
+    test "rejects an improper audios list" do
+      assert {:error, %Error{reason: :invalid_request, message: msg}} =
+               WhisperCt2.transcribe_batch(fake_model(), [{:pcm_f32, <<0, 0, 0, 0>>} | :tail])
+
+      assert msg =~ "proper list"
+    end
+
     test "short-circuits an empty list without touching the NIF" do
       # Contract: empty batch is a no-op, not an error. Critically, this
       # must not depend on a real loaded model.
@@ -152,6 +159,29 @@ defmodule WhisperCt2Test do
       end
     end
 
+    test "rejects a path that is not valid UTF-8" do
+      assert {:error, %Error{reason: :invalid_request, message: msg}} =
+               WhisperCt2.load_model(<<255>>, [])
+
+      assert msg =~ "path"
+    end
+
+    test "rejects options that are not a keyword list" do
+      for opts <- [[:bad], [{"device", :cpu}], [{:device, :cpu, 1}], [{:device, :cpu} | :tail]] do
+        assert {:error, %Error{reason: :invalid_request, message: msg}} =
+                 WhisperCt2.load_model("/tmp", opts)
+
+        assert msg =~ "keyword list"
+      end
+    end
+
+    test "rejects an improper device_indices list" do
+      assert {:error, %Error{reason: :invalid_request, message: msg}} =
+               WhisperCt2.load_model("/tmp", device_indices: [0 | 1])
+
+      assert msg =~ ":device_indices"
+    end
+
     test "accepts max_queued_batches and cpu_core_offset" do
       assert {:error, %Error{reason: reason}} =
                WhisperCt2.load_model("/no/such/dir",
@@ -183,9 +213,9 @@ defmodule WhisperCt2Test do
 
     test "rejects integers that overflow the NIF's fixed-width types" do
       # The NIF decodes these into u32 (`beam_size`, ...) and [i32]
-      # (`suppress_tokens`). Rustler raises ArgumentError for
-      # out-of-range values, which would break the never-raises
-      # contract, so validation must reject them with {:error, _}.
+      # (`suppress_tokens`). Rustler raises for out-of-range values,
+      # which would break the never-raises contract, so validation must
+      # reject them with {:error, _}.
       for opts <- [
             [beam_size: 4_294_967_296],
             [no_repeat_ngram_size: 4_294_967_296],
@@ -202,6 +232,49 @@ defmodule WhisperCt2Test do
         [{key, _} | _] = opts
         assert msg =~ Atom.to_string(key)
       end
+    end
+
+    test "rejects numbers that do not fit the NIF's f32 options" do
+      # f32 options decode through f64, or i64 for an integer, and Rustler
+      # raises when the value is not a finite f32.
+      for opts <- [
+            [patience: 1.0e300],
+            [length_penalty: 1_208_925_819_614_629_174_706_176],
+            [length_penalty: -1.0e300],
+            [repetition_penalty: 1.0e300],
+            [sampling_temperature: 1.0e300]
+          ] do
+        assert {:error, %Error{reason: :invalid_request, message: msg}} =
+                 WhisperCt2.transcribe(fake_model(), {:pcm_f32, <<0, 0, 0, 0>>}, opts)
+
+        [{key, _} | _] = opts
+        assert msg =~ Atom.to_string(key)
+      end
+    end
+
+    test "rejects strings that are not valid UTF-8" do
+      for key <- [:language, :initial_prompt, :prefix] do
+        assert {:error, %Error{reason: :invalid_request, message: msg}} =
+                 WhisperCt2.transcribe(fake_model(), {:pcm_f32, <<0, 0, 0, 0>>}, [{key, <<255>>}])
+
+        assert msg =~ Atom.to_string(key)
+      end
+    end
+
+    test "rejects options that are not a keyword list" do
+      for opts <- [[:bad], [{"language", "en"}], [{:language, "en", 1}], [{:language, "en"} | :tail]] do
+        assert {:error, %Error{reason: :invalid_request, message: msg}} =
+                 WhisperCt2.transcribe(fake_model(), {:pcm_f32, <<0, 0, 0, 0>>}, opts)
+
+        assert msg =~ "keyword list"
+      end
+    end
+
+    test "rejects an improper suppress_tokens list" do
+      assert {:error, %Error{reason: :invalid_request, message: msg}} =
+               WhisperCt2.transcribe(fake_model(), {:pcm_f32, <<0, 0, 0, 0>>}, suppress_tokens: [1 | 2])
+
+      assert msg =~ ":suppress_tokens"
     end
 
     test "rejects empty language string" do
