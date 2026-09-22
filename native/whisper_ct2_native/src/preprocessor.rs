@@ -27,6 +27,7 @@ use rustfft::{Fft, FftPlanner};
 use serde::Deserialize;
 
 use crate::errors::invalid_request;
+use crate::transcribe::MAX_FEATURE_BUFFER_BYTES;
 
 const PREPROCESSOR_CONFIG_FILE: &str = "preprocessor_config.json";
 
@@ -78,6 +79,48 @@ impl Preprocessor {
             }
         }
 
+        // Whisper derives `nb_max_frames` from `n_samples`. A larger
+        // `n_samples` would drop the audio past the last frame of each chunk.
+        let frames = aux.n_samples / aux.hop_length;
+        if aux.nb_max_frames != frames {
+            return Err(anyhow!(
+                "nb_max_frames {} must equal n_samples / hop_length = {frames} in {}",
+                aux.nb_max_frames,
+                path.display()
+            ));
+        }
+
+        // The pad buffer of each chunk and the filterbank are allocated
+        // before any request budget applies, and a failed allocation aborts
+        // the VM instead of unwinding. The filterbank bound counts the peak
+        // of `mel_spec::mel` 0.3.4: the `(feature_size + 2) x n_freq` ramps,
+        // the `feature_size x n_freq` weights, and four `n_freq` vectors.
+        // Per `n_fft` point that is more than the window, FFT frame, and bin
+        // power of `build_chunks` take, so it bounds those too.
+        for (buffer, bytes) in [
+            (
+                "n_samples + 2 * (n_fft / 2) f32 padded chunk",
+                aux.n_samples
+                    .checked_add(aux.n_fft / 2 * 2)
+                    .and_then(|n| n.checked_mul(size_of::<f32>())),
+            ),
+            (
+                "(2 * feature_size + 6) x (n_fft / 2 + 1) f64 mel filterbank build",
+                aux.feature_size
+                    .checked_mul(2)
+                    .and_then(|n| n.checked_add(6))
+                    .and_then(|n| n.checked_mul(aux.n_fft / 2 + 1))
+                    .and_then(|n| n.checked_mul(size_of::<f64>())),
+            ),
+        ] {
+            if bytes.is_none_or(|b| b > MAX_FEATURE_BUFFER_BYTES) {
+                return Err(anyhow!(
+                    "{buffer} exceeds the {MAX_FEATURE_BUFFER_BYTES} byte cap in {}",
+                    path.display()
+                ));
+            }
+        }
+
         let mel_filters = if let Some(rows) = aux.mel_filters {
             let n_rows = rows.len();
             let n_cols = rows.first().map_or(0, Vec::len);
@@ -90,13 +133,16 @@ impl Preprocessor {
                     path.display()
                 ));
             }
-            Array2::from_shape_vec((n_rows, n_cols), rows.into_iter().flatten().collect())
-                .with_context(|| {
-                    format!(
-                        "mel_filters rows have inconsistent lengths in {}",
-                        path.display()
-                    )
-                })?
+            // `from_shape_vec` checks only the total length, so rows whose
+            // lengths balance out would be re-cut at the wrong boundaries.
+            if let Some((i, row)) = rows.iter().enumerate().find(|(_, row)| row.len() != n_cols) {
+                return Err(anyhow!(
+                    "mel_filters row {i} has {} columns, expected n_fft / 2 + 1 = {n_cols} in {}",
+                    row.len(),
+                    path.display()
+                ));
+            }
+            Array2::from_shape_vec((n_rows, n_cols), rows.into_iter().flatten().collect())?
         } else {
             mel(
                 aux.sampling_rate as f64,
@@ -151,6 +197,20 @@ impl Preprocessor {
         let mut frame_buf = vec![Complex32::default(); self.n_fft];
         let pad = self.n_fft / 2;
         let n_freq = self.n_fft / 2 + 1;
+        let mut power = vec![0.0_f64; n_freq];
+        // Each mel row is a narrow triangle, so the projection sums only the
+        // range from its first to its last non-zero weight. The skipped
+        // terms are exact zeros, so the sums stay bit-identical.
+        let bands: Vec<(usize, usize)> = self
+            .mel_filters
+            .rows()
+            .into_iter()
+            .map(|row| {
+                let start = row.iter().position(|&w| w != 0.0).unwrap_or(0);
+                let end = row.iter().rposition(|&w| w != 0.0).map_or(0, |k| k + 1);
+                (start, end)
+            })
+            .collect();
 
         let mut out = Vec::new();
         let mut max_log = f32::NEG_INFINITY;
@@ -169,12 +229,14 @@ impl Preprocessor {
                 }
                 fft.process_with_scratch(&mut frame_buf, &mut scratch);
 
-                for m in 0..self.feature_size {
+                for (p, bin) in power.iter_mut().zip(&frame_buf) {
+                    *p = f64::from(bin.re) * f64::from(bin.re)
+                        + f64::from(bin.im) * f64::from(bin.im);
+                }
+                for (m, &(start, end)) in bands.iter().enumerate() {
                     let mut sum = 0.0_f64;
-                    for (k, bin) in frame_buf.iter().take(n_freq).enumerate() {
-                        let power = f64::from(bin.re) * f64::from(bin.re)
-                            + f64::from(bin.im) * f64::from(bin.im);
-                        sum += self.mel_filters[(m, k)] * power;
+                    for k in start..end {
+                        sum += self.mel_filters[(m, k)] * power[k];
                     }
                     mel_chunk[(m, f)] = sum as f32;
                 }
@@ -485,6 +547,68 @@ mod tests {
     }
 
     #[test]
+    fn build_chunks_floors_a_mel_row_whose_filter_is_all_zero() {
+        // An all-zero row has an empty band: its mel power is 0.0, which
+        // scales to the whole-audio floor, loud max - 2.0.
+        let mut preprocessor = tiny_preprocessor();
+        preprocessor.mel_filters.row_mut(1).fill(0.0);
+        let samples: Vec<f32> = (0..64).map(|i| 0.5 * (i as f32 * 0.7).sin()).collect();
+
+        let chunks = preprocessor.build_chunks(&samples).expect("build_chunks");
+        let loud_max = chunks[0].iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        for v in chunks[0].row(1) {
+            assert!(
+                (v - (loud_max - 2.0)).abs() < 1e-6,
+                "got {v}, max {loud_max}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_chunks_band_projection_equals_the_dense_projection_bit_for_bit() {
+        // Rows whose first or last non-zero weight sits on a band edge:
+        // one bin at DC, one bin at Nyquist, both edges, and an interior
+        // band. A band that drops an edge weight changes these sums.
+        let mut preprocessor = tiny_preprocessor();
+        preprocessor.feature_size = 4;
+        preprocessor.mel_filters = ndarray::array![
+            [1.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 1.0],
+            [0.5, 0.0, 0.0, 0.0, 0.25],
+            [0.0, 0.3, 0.7, 0.0, 0.0],
+        ];
+        let samples: Vec<f32> = (0..64)
+            .map(|i| 0.3 + 0.2 * (-1.0_f32).powi(i) + 0.4 * (i as f32 * 0.7).sin())
+            .collect();
+
+        let window = hann_window(preprocessor.n_fft);
+        let fft = preprocessor.fft();
+        let padded = reflect_pad_chunk(&samples, preprocessor.n_samples, preprocessor.n_fft / 2);
+        let mut dense = Array2::<f32>::zeros((4, preprocessor.nb_max_frames));
+        for f in 0..preprocessor.nb_max_frames {
+            let start = f * preprocessor.hop_length;
+            let mut frame: Vec<Complex32> = (0..preprocessor.n_fft)
+                .map(|i| Complex32::new(padded[start + i] * window[i], 0.0))
+                .collect();
+            fft.process(&mut frame);
+            for (m, row) in preprocessor.mel_filters.rows().into_iter().enumerate() {
+                let mut sum = 0.0_f64;
+                for (w, bin) in row.iter().zip(&frame) {
+                    sum += w
+                        * (f64::from(bin.re) * f64::from(bin.re)
+                            + f64::from(bin.im) * f64::from(bin.im));
+                }
+                dense[(m, f)] = sum as f32;
+            }
+        }
+        let max_log = log_mel(&mut dense);
+        scale_log_mel(&mut dense, max_log);
+
+        let chunks = preprocessor.build_chunks(&samples).expect("build_chunks");
+        assert_eq!(chunks, vec![dense]);
+    }
+
+    #[test]
     fn reflect_pad_chunk_mirrors_edges_without_repeating_them() {
         // np.pad 'reflect' convention: the edge sample itself is not
         // repeated. Left pad reads chunk[pad], .., chunk[1]; the body is
@@ -552,6 +676,66 @@ mod tests {
     }
 
     #[test]
+    fn load_rejects_nb_max_frames_other_than_n_samples_over_hop_length() {
+        // 128 / 4 = 32 frames, but only 16 are configured: each chunk
+        // would silently drop its second half.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = base_config();
+        config["n_samples"] = serde_json::json!(128);
+        write_config(dir.path(), &config.to_string());
+
+        let err = Preprocessor::load(dir.path()).expect_err("frame mismatch must fail at load");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("nb_max_frames 16 must equal n_samples / hop_length = 32"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_rejects_buffers_over_the_feature_byte_cap_naming_the_buffer() {
+        // Each config passes the zero and frame checks, so only the byte
+        // cap stops it before the allocation.
+        for (overrides, buffer) in [
+            // 1.6e11 samples: a 640 GB pad buffer per chunk.
+            (
+                serde_json::json!({
+                    "n_samples": 160_000_000_000_usize,
+                    "hop_length": 10_000_000_000_usize,
+                }),
+                "padded chunk",
+            ),
+            // n_samples + 2 * (n_fft / 2) overflows usize.
+            (
+                serde_json::json!({"n_samples": usize::MAX, "hop_length": usize::MAX / 16}),
+                "padded chunk",
+            ),
+            // 1e8 x 5 f64: a 4 GB synthesised filterbank.
+            (
+                serde_json::json!({"feature_size": 100_000_000}),
+                "mel filterbank",
+            ),
+            // The 2 x 5e7 f64 filterbank alone is 800 MB, but `mel_spec::mel`
+            // peaks at 10 x 5e7 f64, 4 GB, while it builds it.
+            (serde_json::json!({"n_fft": 100_000_000}), "mel filterbank"),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let mut config = base_config();
+            for (field, value) in overrides.as_object().expect("overrides object") {
+                config[field] = value.clone();
+            }
+            write_config(dir.path(), &config.to_string());
+
+            let err = Preprocessor::load(dir.path()).expect_err("oversized config must fail");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains(buffer) && msg.contains("byte cap"),
+                "error must name the {buffer}, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
     fn load_rejects_mel_filters_shape_mismatch() {
         // An undersized filterbank panics on out-of-bounds indexing in
         // the mel projection at transcribe time; the mismatch must be a
@@ -582,6 +766,28 @@ mod tests {
 
         let err = Preprocessor::load(dir.path()).expect_err("ragged rows must fail at load");
         assert!(format!("{err:#}").contains("mel_filters"));
+    }
+
+    #[test]
+    fn load_rejects_ragged_mel_filters_rows_whose_lengths_balance_naming_the_row() {
+        // Rows of 5, 4 and 6 total 15 = 3 x 5, so a flatten-and-reshape
+        // would accept them and shift the coefficients across rows.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = base_config();
+        config["feature_size"] = serde_json::json!(3);
+        config["mel_filters"] = serde_json::json!([
+            [1.0, 1.0, 1.0, 1.0, 1.0],
+            [2.0, 2.0, 2.0, 2.0],
+            [3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
+        ]);
+        write_config(dir.path(), &config.to_string());
+
+        let err = Preprocessor::load(dir.path()).expect_err("balanced ragged rows must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("mel_filters row 1 has 4 columns"),
+            "got: {msg}"
+        );
     }
 
     #[test]
