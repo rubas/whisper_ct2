@@ -92,7 +92,11 @@ impl Preprocessor {
 
         // The pad buffer of each chunk and the filterbank are allocated
         // before any request budget applies, and a failed allocation aborts
-        // the VM instead of unwinding.
+        // the VM instead of unwinding. The filterbank bound counts the peak
+        // of `mel_spec::mel` 0.3.4: the `(feature_size + 2) x n_freq` ramps,
+        // the `feature_size x n_freq` weights, and four `n_freq` vectors.
+        // Per `n_fft` point that is more than the window, FFT frame, and bin
+        // power of `build_chunks` take, so it bounds those too.
         for (buffer, bytes) in [
             (
                 "n_samples + 2 * (n_fft / 2) f32 padded chunk",
@@ -101,9 +105,11 @@ impl Preprocessor {
                     .and_then(|n| n.checked_mul(size_of::<f32>())),
             ),
             (
-                "feature_size x (n_fft / 2 + 1) f64 mel filterbank",
+                "(2 * feature_size + 6) x (n_fft / 2 + 1) f64 mel filterbank build",
                 aux.feature_size
-                    .checked_mul(aux.n_fft / 2 + 1)
+                    .checked_mul(2)
+                    .and_then(|n| n.checked_add(6))
+                    .and_then(|n| n.checked_mul(aux.n_fft / 2 + 1))
                     .and_then(|n| n.checked_mul(size_of::<f64>())),
             ),
         ] {
@@ -665,6 +671,9 @@ mod tests {
                 serde_json::json!({"feature_size": 100_000_000}),
                 "mel filterbank",
             ),
+            // The 2 x 5e7 f64 filterbank alone is 800 MB, but `mel_spec::mel`
+            // peaks at 10 x 5e7 f64, 4 GB, while it builds it.
+            (serde_json::json!({"n_fft": 100_000_000}), "mel filterbank"),
         ] {
             let dir = tempfile::tempdir().expect("tempdir");
             let mut config = base_config();
