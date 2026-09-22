@@ -1,13 +1,74 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 - 2026-09-23
+
+Fixes the audit findings #55 to #65, #67 and #74, and moves the
+precompiled NIFs to CTranslate2 4.8.2. Two changes are visible to callers,
+so this is a minor release: `Transcription.text` joins segments without a
+separator, and `Segment.avg_logprob` no longer scales with
+`:length_penalty`.
 
 ### Changed
 
-- CI now uses Elixir 1.20.3 (was 1.20.2) and OTP 29.0.5 (was 29.0). This
-  applies to `ci.yml`, `integration.yml` and `security.yml`. `security.yml`
-  also names the versions in its setup-beam install directories. Those move
-  too. `mix.exs` keeps `elixir: "~> 1.17"` as the minimum version.
+- **Breaking:** `Transcription.text` no longer inserts a space between
+  segments. The NIF keeps the tokenizer's spacing, so CJK transcripts and
+  words split at a segment boundary now join correctly. English output
+  does not change. Callers that split `text` on the old separator must use
+  `:segments` instead. (#57)
+- **Breaking:** `Segment.avg_logprob` uses the faster-whisper formula: the
+  mean log probability per generated token, end-of-text included. It no
+  longer depends on `:length_penalty`. At the default penalty, values move
+  slightly toward zero (-0.600 becomes -0.594). Check any `avg_logprob`
+  threshold that you tuned with a non-default `:length_penalty`. (#56)
+- `:initial_prompt` keeps only its last `min(max_length, 448) / 2 - 1`
+  tokens and `:prefix` only its first `min(max_length, 448) / 2 - 1` tokens
+  (223 at the default `:max_length`), like faster-whisper. A long prompt no
+  longer shortens or empties the transcript or returns `:inference_error`.
+  (#55)
+- ct2rs 0.10.0 -> 0.10.1. The precompiled NIFs now vendor CTranslate2
+  4.8.2, which adds StorageView bounds and allocation size checks, and
+  oneDNN 3.13.2.
+- Source builds require Rust 1.98 or later. The crate declares
+  `rust-version = "1.98"`. Precompiled installs do not change.
+- Mel preprocessing is about 9 to 14 times faster. The output is
+  bit-identical. (#67)
+- Transcription frees the mel chunks before the encoder runs, which lowers
+  peak memory for long audio and large batches. (#58)
+- CI uses Elixir 1.20.4, OTP 29.1.1 and Rust 1.98.1. `mix.exs` keeps
+  `elixir: "~> 1.17"` as the minimum version.
+- The release workflow decides from the `v<version>` tag whether a version
+  is released, and a manual dispatch builds from the tag it gets. See
+  `docs/release.md`.
+
+### Fixed
+
+- `rustls` in `Cargo.lock` moves to 0.23.45 to fix RUSTSEC-2026-0285. Only
+  the optional `mkl` and `openblas` source builds use it. (#53)
+- `load_model/2` returns `:load_error` for a `preprocessor_config.json`
+  with ragged `mel_filters` rows, even when the row lengths add up to the
+  expected total. The error names the first bad row. (#64)
+- `load_model/2` returns `:load_error` when `nb_max_frames` is not
+  `n_samples / hop_length`, or when the pad buffer of one chunk or the mel
+  filterbank build goes past the 2 GiB feature buffer cap. Before, such a
+  config loaded, and the first transcribe then aborted the VM or silently
+  dropped audio. (#65)
+- `Segment.start` and `Segment.end` of a closed timestamp pair are never
+  past the real audio length. (#59)
+- Word timestamps use the true median word duration for chunks with an
+  even word count, as faster-whisper does. (#63)
+- `transcribe/3` and `transcribe_batch/3` return `:inference_error` instead
+  of raising `ArgumentError` when an extreme `:length_penalty` makes the
+  decoder score infinite or NaN. (#74)
+- Options that are not a keyword list, improper lists in
+  `:suppress_tokens`, `:device_indices`, or the audios of
+  `transcribe_batch/3`, float options outside the `f32` range, and strings
+  that are not valid UTF-8 return `:invalid_request` instead of raising.
+  (#60)
+- `transcribe_batch/3` validates the options for an empty audio list.
+  Invalid options return `:invalid_request` instead of `{:ok, []}`. (#61)
+- `WhisperCt2.Pcm.slice/4` returns `:invalid_request` for a start or
+  duration so large that the sample count overflows a float, instead of
+  raising `ArithmeticError`. (#62)
 
 ## 0.6.2 - 2026-08-28
 
