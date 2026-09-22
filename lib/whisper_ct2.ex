@@ -265,8 +265,6 @@ defmodule WhisperCt2 do
           {:ok, [Transcription.t()]} | {:error, Error.t()}
   def transcribe_batch(model, audios, opts \\ [])
 
-  def transcribe_batch(%Model{} = _model, [], _opts), do: {:ok, []}
-
   def transcribe_batch(%Model{} = model, audios, opts)
       when is_list(audios) and is_list(opts) do
     with :ok <- validate_options(opts, transcribe_validators()),
@@ -282,6 +280,8 @@ defmodule WhisperCt2 do
        "expected a %WhisperCt2.Model{}, a list of audios, and a keyword list"
      )}
   end
+
+  defp do_transcribe_batch(_model, [], _opts), do: {:ok, []}
 
   defp do_transcribe_batch(%Model{ref: ref}, samples_list, opts) do
     case Native.transcribe_batch(ref, samples_list, build_transcribe_opts(opts)) do

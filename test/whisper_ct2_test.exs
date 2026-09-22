@@ -94,6 +94,16 @@ defmodule WhisperCt2Test do
       # must not depend on a real loaded model.
       assert {:ok, []} = WhisperCt2.transcribe_batch(fake_model(), [])
     end
+
+    test "validates options before it short-circuits an empty list" do
+      for opts <- [[beam_sizee: 5], [beam_size: -1], [max_length: 4_294_967_296]] do
+        assert {:error, %Error{reason: :invalid_request, message: msg}} =
+                 WhisperCt2.transcribe_batch(fake_model(), [], opts)
+
+        [{key, _} | _] = opts
+        assert msg =~ Atom.to_string(key)
+      end
+    end
   end
 
   describe "available_devices/0" do
