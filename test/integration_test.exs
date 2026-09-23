@@ -455,7 +455,7 @@ defmodule WhisperCt2.IntegrationTest do
       texts =
         for {:ok, %Transcription{text: t}} <- results, do: normalised(t)
 
-      assert length(Enum.uniq(texts)) == 1,
+      assert match?([_], Enum.uniq(texts)),
              "concurrent transcribes diverged: #{inspect(texts)}"
     end
   end
