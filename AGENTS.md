@@ -8,23 +8,15 @@ taxonomy. This file covers repo-internal work only.
 
 ## Gates
 
-`task check` is the default gate: format check, compile, credo, Elixir tests,
-Rust tests, and zizmor over the workflows. CI runs the same target on pushes
-to `main` and on pull requests, then builds the Hex tarball.
-
 - The first compile builds CTranslate2 from source and takes about ten
   minutes. Later compiles reuse the Cargo target dir.
 - `task test:integration` downloads the tiny model and the JFK clip (about
   75 MB) and runs a real transcription. GitHub runs it on a weekly cron and
   on manual dispatch, never on a pull request. Run it locally after you
   change the NIF.
-- `task fix` applies formatting and clippy fixes in place.
 
 ## Layout
 
-- `native/whisper_ct2_native/src/` holds the NIF: `transcribe.rs` the
-  transcription flow, `preprocessor.rs` the mel filterbank, `tokens.rs` the
-  special-token resolution, `align.rs` the word alignment.
 - `tools/*/generate.py` regenerate the golden fixtures from `faster-whisper`.
   Run them only when the reference implementation changes.
 - `test/fixtures/` is downloaded on demand and gitignored, except the
@@ -32,7 +24,6 @@ to `main` and on pull requests, then builds the Hex tarball.
   without network access.
 - `checksum-Elixir.WhisperCt2.Native.exs` is tracked so the checksum matching
   each tagged release is reproducible from the repo.
-- `docs/release.md` holds the artefact matrix and the publish procedure.
 
 ## House decisions
 
