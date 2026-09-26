@@ -1,14 +1,14 @@
 # whisper_ct2
 
-`whisper_ct2` is an Elixir library for running OpenAI Whisper speech-to-text
-models inside the BEAM. It loads CTranslate2-converted Whisper models through a
-Rustler NIF, so Elixir code can transcribe f32 PCM buffers without starting
-Python or a separate inference service.
+`whisper_ct2` is an Elixir library that runs OpenAI Whisper speech-to-text
+models inside the BEAM. A Rustler NIF loads Whisper models in the CTranslate2
+format, so Elixir code can transcribe f32 PCM audio without Python or a
+separate inference service.
 
-CTranslate2 is the speed-optimised C++ inference engine that powers
-[`faster-whisper`](https://github.com/SYSTRAN/faster-whisper): 4-8x faster
-than vanilla `openai-whisper` on the same hardware, with int8 / int8-float16
-quantisation and CUDA / oneDNN / MKL / Accelerate backends.
+CTranslate2 is the C++ inference engine behind
+[`faster-whisper`](https://github.com/SYSTRAN/faster-whisper). It supports
+int8 and int8-float16 quantization, and CUDA, oneDNN, MKL, and Accelerate
+backends.
 
 ## Installation
 
@@ -18,26 +18,23 @@ def deps do
 end
 ```
 
-Installation downloads a precompiled NIF artefact matching your target triple
-from the project's GitHub releases. No Rust toolchain or CMake is needed on
-the consumer side.
+The install downloads the precompiled NIF for your target triple from the
+GitHub release of this version. You need no Rust toolchain and no CMake.
 
-### Source builds
-
-Set `WHISPER_CT2_BUILD=1` in your environment (or
-`config :rustler_precompiled, :force_build, whisper_ct2: true` in your parent
-project) to compile from source instead. The first source build of CTranslate2
-takes ~10 minutes and requires:
+To build from source instead, set `WHISPER_CT2_BUILD=1`, or set
+`config :rustler_precompiled, :force_build, whisper_ct2: true` in your
+project. The first source build of CTranslate2 takes about 10 minutes and
+needs:
 
 - Rust 1.98 or later (`rustup`)
-- `cmake`, a C++17 compiler, `make`
-- Linux: `libstdc++`, `libgomp` available at link time
-- CUDA toolkit 12+ if building with `cuda` or `cuda-dynamic` features
+- `cmake`, `make`, and a C++17 compiler
+- On Linux: `libstdc++` and `libgomp` at link time
+- CUDA toolkit 12 or later for the `cuda` or `cuda-dynamic` features
 
 ## Models
 
-Point `WhisperCt2.load_model/2` at a directory containing a CTranslate2-converted
-Whisper model. Required files:
+`WhisperCt2.load_model/2` takes a directory with a Whisper model in the
+CTranslate2 format. The directory must contain these files:
 
 ```text
 model.bin
@@ -48,9 +45,8 @@ preprocessor_config.json
 ```
 
 The [`Systran/faster-whisper-*`](https://huggingface.co/Systran) repositories
-ship the first four directly. They do **not** include
-`preprocessor_config.json`; copy the canonical one from `openai/whisper-tiny.en`
-(or any other `openai/whisper-*` repo - all Whisper sizes share the same file):
+have the first four files, but not `preprocessor_config.json`. Copy that file
+from any `openai/whisper-*` repository; all Whisper sizes use the same one:
 
 ```bash
 uvx hf download Systran/faster-whisper-tiny.en \
@@ -60,70 +56,13 @@ uvx hf download openai/whisper-tiny.en preprocessor_config.json \
   --local-dir models/faster-whisper-tiny.en
 ```
 
-## Backends
-
-The published Hex package ships four precompiled artefacts; install picks the
-right one automatically based on your target triple:
-
-| Target triple                       | CPU backend | GPU            | Notes                                                |
-| ----------------------------------- | ----------- | -------------- | ---------------------------------------------------- |
-| `aarch64-apple-darwin`              | Accelerate  | none           | Apple Silicon (M1+). Uses Accelerate / AMX paths.    |
-| `x86_64-unknown-linux-gnu`          | oneDNN      | `cuda-dynamic` | Default x86_64 binary; runs well on Intel and AMD.   |
-| `x86_64-unknown-linux-gnu` (`mkl`)  | Intel MKL   | `cuda-dynamic` | Intel-tuned variant. Opt in via env var (below).     |
-| `aarch64-unknown-linux-gnu`         | oneDNN      | `cuda-dynamic` | Graviton/Grace, optional CUDA on GH200-class hosts.  |
-
-`cuda-dynamic` defers loading `libcudart` until first GPU use, so each artefact
-still runs on hosts without CUDA installed. `:device` selection picks CUDA when
-available, otherwise CPU.
-
-x86_64 macOS and Windows are not shipped.
-
-### Selecting the MKL variant
-
-For Intel-only fleets where you want maximum SGEMM throughput:
-
-```bash
-WHISPER_CT2_VARIANT=mkl mix deps.compile whisper_ct2
-```
-
-`rustler_precompiled` reads this env var at install time and selects the `--mkl`
-artefact instead of the default.
-
-### Build from source with a custom backend
-
-For source builds you can pick any combination of `ct2rs` features:
-
-```bash
-WHISPER_CT2_BUILD=1 WHISPER_CT2_FEATURES="dnnl cuda-dynamic" mix compile
-# other options: mkl, openblas, accelerate, cuda, cuda-dynamic
-```
-
-### Runtime device selection
-
-```elixir
-WhisperCt2.available_devices()
-#=> {:ok, %{cpu: 1, cuda: 1, cuda_supported: true}}
-
-{:ok, model} =
-  WhisperCt2.load_model("models/faster-whisper-tiny.en",
-    device: :auto,            # :cpu | :cuda | :auto (default)
-    compute_type: :auto,      # :default | :auto | :float16 | :int8_float16 | ...
-    device_indices: [0]
-  )
-```
-
-`:auto` picks CUDA when the artefact supports it and at least one CUDA device
-is visible; otherwise CPU. Explicit `:cuda` returns
-`{:error, %WhisperCt2.Error{reason: :invalid_request}}` if either condition
-fails.
-
 ## Usage
 
 ```elixir
 {:ok, model} = WhisperCt2.load_model("models/faster-whisper-tiny.en")
 
-# Decode/resample to 16 kHz mono f32 PCM upstream (ffmpeg, Membrane,
-# anything that produces little-endian f32 bytes).
+# Decode and resample to 16 kHz mono f32 PCM before this call (ffmpeg,
+# Membrane, or any tool that writes little-endian f32 bytes).
 pcm = File.read!("jfk.pcm")
 
 {:ok, %WhisperCt2.Transcription{text: text, segments: segs}} =
@@ -137,39 +76,33 @@ for s <- segs do
 end
 ```
 
-`%WhisperCt2.Segment{}` carries absolute `:start` / `:end` seconds,
-`:no_speech_prob`, `:avg_logprob`, the underlying text token IDs, and
-(when `:word_timestamps` is on) a list of `%WhisperCt2.Word{}` with
-per-word timing.
+A `%WhisperCt2.Segment{}` has the absolute `:start` and `:end` in seconds,
+`:no_speech_prob`, `:avg_logprob`, and the text token IDs. With
+`:word_timestamps`, it also has a list of `%WhisperCt2.Word{}` with the timing
+of each word.
 
-### Audio contract
+### Audio
 
-CTranslate2 expects **mono `f32` PCM samples** at the model's sample rate
-(16 kHz for every published Whisper checkpoint), normalized to the
-`-1.0..1.0` range. `transcribe/3` and `transcribe_batch/3` accept exactly
-one shape:
+`transcribe/3` and `transcribe_batch/3` accept only `{:pcm_f32, binary}`:
+little-endian, mono `f32` samples in the range `-1.0..1.0`, at the sample rate
+of the model. Every published Whisper checkpoint uses 16 kHz.
 
-- `{:pcm_f32, binary}` - little-endian f32 samples at the model's
-  sample rate.
-
-Anything else (paths, raw bare binaries, WAV bytes, MP3, 44.1 kHz, ...)
-is rejected at the boundary with an `:invalid_request` error, as are
-non-finite samples (NaN or infinity, usually an upstream decoder bug).
-There is no bundled audio decoder; decode, downmix, and resample
-upstream using your tool of choice. For a one-shot file conversion:
+The library returns an `:invalid_request` error for every other input, such as
+a path, WAV or MP3 bytes, or 44.1 kHz audio. It also rejects NaN and infinite
+samples, which usually come from a bug in the upstream decoder. The library
+has no audio decoder. To convert a file once:
 
 ```bash
 ffmpeg -i input.mp3 -ar 16000 -ac 1 -f f32le output.pcm
 ```
 
-Audio longer than 30 s is chunked into Whisper windows automatically; the
-encoder runs once across every chunk in the batch.
+The library splits audio longer than 30 s into Whisper windows. The encoder
+runs once for all chunks.
 
-### Batched transcribe and word timestamps
+### Batches and word timestamps
 
 ```elixir
-# Diarization-driven workflow: one master decode upstream, many short
-# splices fed in as PCM byte ranges.
+# Diarization: decode the call once, then transcribe each speaker turn.
 samples = File.read!("call.pcm")
 turns =
   [
@@ -183,11 +116,11 @@ turns =
   WhisperCt2.transcribe_batch(model, turns, language: "en", word_timestamps: true)
 ```
 
-`transcribe_batch/3` stacks every chunk of every input into one encoder
-forward pass. `:word_timestamps` adds one batched DTW alignment pass and
-attaches `%Word{}` entries to each segment.
+`transcribe_batch/3` puts every chunk of every input into one encoder forward
+pass. `:word_timestamps` adds one batched DTW alignment pass and adds
+`%Word{}` entries to each segment.
 
-### Decoding biases
+### Prompt and prefix
 
 ```elixir
 WhisperCt2.transcribe(model, {:pcm_f32, talk_pcm},
@@ -197,13 +130,13 @@ WhisperCt2.transcribe(model, {:pcm_f32, talk_pcm},
 )
 ```
 
-`:initial_prompt` prepends free-text context (via `<|startofprev|>`) so the
-decoder is biased toward your domain vocabulary or speaker style;
-`:prefix` forces the start of the generated transcript. Like faster-whisper,
-the library keeps only the last `min(max_length, 448) / 2 - 1` tokens of the
-prompt and the first `min(max_length, 448) / 2 - 1` tokens of the prefix (223
-each at the default `:max_length` of 448). The cap of 448 is the decoder's
-position count, so a long prompt cannot use up the output budget.
+`:initial_prompt` adds text before the audio (through `<|startofprev|>`), so
+the decoder prefers the words and style of that text. `:prefix` sets the start
+of the transcript. Like faster-whisper, the library keeps the last
+`min(max_length, 448) / 2 - 1` tokens of the prompt and the first
+`min(max_length, 448) / 2 - 1` tokens of the prefix. At the default
+`:max_length` of 448, that is 223 tokens each. 448 is the position count of
+the decoder, so a long prompt cannot use up the output tokens.
 
 ## Options
 
@@ -229,39 +162,88 @@ position count, so a long prompt cannot use up the output budget.
 | `:num_hypotheses`              | `pos_integer`       | Number of decoded hypotheses.                          |
 | `:max_initial_timestamp_index` | `non_neg_integer`   | Cap the first timestamp token.                         |
 
-Unset values use the CTranslate2 defaults. `no_speech_prob` and
-`avg_logprob` are always populated on each segment - there is no opt-in
-return-knob.
+Unset options use the CTranslate2 defaults. Every segment has
+`no_speech_prob` and `avg_logprob`; no option is needed for them.
 
-Unknown option keys and out-of-range values return
-`{:error, %WhisperCt2.Error{reason: :invalid_request}}` before reaching the
-NIF.
+An unknown option key or a value out of range returns
+`{:error, %WhisperCt2.Error{reason: :invalid_request}}` before the call
+reaches the NIF.
 
 ## Errors
 
-All failures return `{:error, %WhisperCt2.Error{}}`. `reason` is one of
+Every failure returns `{:error, %WhisperCt2.Error{}}`. `reason` is one of
 `:invalid_request`, `:load_error`, `:inference_error`, `:runtime_error`,
-`:nif_panic`, or `:native_error`. The struct also implements `Exception`, so
+`:nif_panic`, or `:native_error`. The struct is also an exception, so
 `raise/1` works.
+
+## Backends and devices
+
+Each release has four precompiled NIFs. The install picks the one for your
+target triple:
+
+| Target triple                      | CPU backend | GPU            | Notes                                                 |
+| ---------------------------------- | ----------- | -------------- | ----------------------------------------------------- |
+| `aarch64-apple-darwin`             | Accelerate  | none           | Apple Silicon (M1 and later).                         |
+| `x86_64-unknown-linux-gnu`         | oneDNN      | `cuda-dynamic` | The default on x86_64, for Intel and AMD.             |
+| `x86_64-unknown-linux-gnu` (`mkl`) | Intel MKL   | `cuda-dynamic` | Tuned for Intel. Opt in with `WHISPER_CT2_VARIANT`.   |
+| `aarch64-unknown-linux-gnu`        | oneDNN      | `cuda-dynamic` | Graviton and Grace; CUDA on GH200-class hosts.        |
+
+There is no build for x86_64 macOS or Windows.
+
+`cuda-dynamic` loads `libcudart` only on the first GPU use, so each NIF also
+runs on a host without CUDA.
+
+To get the MKL build on an Intel-only fleet, set the variable when you
+compile the dependency:
+
+```bash
+WHISPER_CT2_VARIANT=mkl mix deps.compile whisper_ct2
+```
+
+A source build can use any combination of the `ct2rs` features `dnnl`, `mkl`,
+`openblas`, `accelerate`, `cuda`, and `cuda-dynamic`:
+
+```bash
+WHISPER_CT2_BUILD=1 WHISPER_CT2_FEATURES="dnnl cuda-dynamic" mix compile
+```
+
+Choose the device when you load the model:
+
+```elixir
+WhisperCt2.available_devices()
+#=> {:ok, %{cpu: 1, cuda: 1, cuda_supported: true}}
+
+{:ok, model} =
+  WhisperCt2.load_model("models/faster-whisper-tiny.en",
+    device: :auto,            # :cpu | :cuda | :auto (default)
+    compute_type: :auto,      # :default | :auto | :float16 | :int8_float16 | ...
+    device_indices: [0]
+  )
+```
+
+`:auto` uses CUDA when the NIF supports it and the host has at least one CUDA
+device. Otherwise it uses the CPU. `:cuda` returns
+`{:error, %WhisperCt2.Error{reason: :invalid_request}}` when one of these
+conditions is false.
 
 ## Testing
 
-Unit tests run with no external dependencies:
+The unit tests need no network:
 
 ```bash
 mix test
 ```
 
-The end-to-end transcription test downloads the `faster-whisper-tiny.en` model
-(~75 MB) and the `jfk.wav` clip from the whisper.cpp samples:
+The end-to-end test downloads the `faster-whisper-tiny.en` model (about 75 MB)
+and the `jfk.wav` clip from the whisper.cpp samples into `test/fixtures/`:
 
 ```bash
 mix test --include integration
 ```
 
-Cached under `test/fixtures/`. Set `WHISPER_CT2_REFRESH=1` to redownload.
+Set `WHISPER_CT2_REFRESH=1` to download them again.
 
 ## License
 
-MIT. CTranslate2 itself is MIT-licensed. The bundled `ct2rs` crate links
-CTranslate2 statically by default.
+MIT. CTranslate2 is also MIT. The `ct2rs` crate links CTranslate2 statically
+by default.
