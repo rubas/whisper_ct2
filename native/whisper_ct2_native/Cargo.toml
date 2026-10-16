@@ -10,12 +10,15 @@ crate-type = ["cdylib"]
 
 [dependencies]
 rustler = "0.38.0"
-ct2rs = { version = "0.10.1", features = ["whisper"] }
+# No `whisper` feature: it only builds the high-level `ct2rs::Whisper`
+# wrapper, which we do not use, and pulls in mel_spec 0.3 with the yanked
+# zip 2.x (#85).
+ct2rs = { version = "0.10.1", features = ["tokenizers"] }
+mel_spec = "0.5"
 # Versions pinned to match ct2rs 0.10.1 so duplicate crates collapse during
 # build. `tokenizers` must stay on ct2rs's major/minor: our code passes
 # ct2rs's re-exported `hf::Tokenizer` to `tokenizers::Tokenizer` by
 # reference, which only compiles while both are the same crate version.
-mel_spec = "0.3"
 ndarray = "0.16"
 tokenizers = "0.22"
 serde = { version = "1.0", features = ["derive"] }

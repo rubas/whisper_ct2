@@ -93,7 +93,7 @@ impl Preprocessor {
         // The pad buffer of each chunk and the filterbank are allocated
         // before any request budget applies, and a failed allocation aborts
         // the VM instead of unwinding. The filterbank bound counts the peak
-        // of `mel_spec::mel` 0.3.4: the `(feature_size + 2) x n_freq` ramps,
+        // of `mel_spec::mel` 0.5.0: the `(feature_size + 2) x n_freq` ramps,
         // the `feature_size x n_freq` weights, and four `n_freq` vectors.
         // Per `n_fft` point that is more than the window, FFT frame, and bin
         // power of `build_chunks` take, so it bounds those too.
