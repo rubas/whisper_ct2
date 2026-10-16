@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- The NIF crate moves to `mel_spec` 0.5 and builds `ct2rs` without its
+  unused `whisper` feature. This removes the yanked `zip` 2.4.2, which
+  failed the daily cargo-audit. `Cargo.lock` holds 15 fewer crates. (#85)
+
 ## 0.7.0 - 2026-09-23
 
 Fixes the audit findings #55 to #65, #67 and #74, and moves the
