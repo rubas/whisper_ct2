@@ -1,7 +1,8 @@
 //! Core transcription flow driving `ct2rs::sys::Whisper`. `transcribe_many`
 //! stacks every chunk of every audio into one batched `encode`+`generate`
 //! call so multi-chunk and multi-audio inputs share a single encoder pass;
-//! `word_timestamps` adds one batched `align` on the same encoder output.
+//! language auto-detection and the `align` of `word_timestamps` reuse the
+//! same encoder output.
 
 // `transcribe_many` is intentionally one long function — every step shares
 // per-audio bookkeeping and splitting it costs clarity more than it saves.
@@ -140,7 +141,8 @@ pub(crate) fn transcribe_one(
 }
 
 /// Transcribes multiple audios in a single batched `generate` call.
-/// Language detection (when not pinned) runs per-audio on the first chunk.
+/// Language detection (when not pinned) reads the first chunk of each audio
+/// from the same encoder output.
 pub(crate) fn transcribe_many(
     whisper: &Whisper,
     tokenizer: &hf::Tokenizer,
@@ -156,10 +158,28 @@ pub(crate) fn transcribe_many(
     let projected_elements =
         validate_feature_budget(preprocessor, audios.iter().map(|samples| samples.len()))?;
 
-    let mut per_audio_chunks: Vec<Vec<ndarray::Array2<f32>>> = Vec::with_capacity(audios.len());
-    let mut per_audio_languages: Vec<String> = Vec::with_capacity(audios.len());
+    // A pinned language fails fast, before the mel and encoder work.
+    // `None` means detect it from the encoder output.
+    let multilingual = whisper.is_multilingual();
+    let pinned_language = match &request.language {
+        Some(lang) => {
+            reject_non_english_on_en_checkpoint(multilingual, lang)?;
+            let token = language_token(tokenizer, lang)
+                .map_err(|_| invalid_request(format!("invalid language code: {lang}")))?;
+            Some(token)
+        }
+        // English-only checkpoints (`*.en`) always transcribe English.
+        None if !multilingual => Some("<|en|>".to_owned()),
+        None => None,
+    };
+
+    let mut chunk_counts: Vec<usize> = Vec::with_capacity(audios.len());
     let mut per_audio_duration: Vec<f32> = Vec::with_capacity(audios.len());
 
+    // Finiteness needs no re-check here: the NIF boundary rejects
+    // non-finite PCM and `build_chunks` rejects mel power overflow, so
+    // every value in these chunks is already known finite.
+    let mut flat: Vec<f32> = Vec::with_capacity(projected_elements);
     for samples in audios {
         let chunks = preprocessor
             .build_chunks(samples)
@@ -167,50 +187,20 @@ pub(crate) fn transcribe_many(
         if chunks.is_empty() {
             return Err(invalid_request("audio produced no mel chunks"));
         }
-        let duration_s = samples.len() as f32 / preprocessor.sampling_rate as f32;
-        per_audio_duration.push(duration_s);
-        per_audio_chunks.push(chunks);
-    }
-
-    let chunk_counts: Vec<usize> = per_audio_chunks.iter().map(Vec::len).collect();
-    let chunk_offsets = compute_chunk_offsets(&chunk_counts);
-
-    let multilingual = whisper.is_multilingual();
-    if let Some(lang) = &request.language {
-        reject_non_english_on_en_checkpoint(multilingual, lang)?;
-        let token = language_token(tokenizer, lang)
-            .map_err(|_| invalid_request(format!("invalid language code: {lang}")))?;
-        per_audio_languages.extend(std::iter::repeat_n(token, audios.len()));
-    } else if !multilingual {
-        // English-only checkpoints (`*.en`) always transcribe English.
-        // Skip `detect_language` and pin the result.
-        per_audio_languages.extend(std::iter::repeat_n("<|en|>".to_owned(), audios.len()));
-    } else {
-        for chunks in &per_audio_chunks {
-            let detected = detect_language(whisper, &chunks[0], preprocessor)?;
-            per_audio_languages.push(detected);
-        }
-    }
-
-    let total_chunks: usize = chunk_counts.iter().sum();
-    let n_mels = preprocessor.feature_size;
-    let chunk_length = preprocessor.nb_max_frames;
-
-    // Finiteness needs no re-check here: the NIF boundary rejects
-    // non-finite PCM and `build_chunks` rejects mel power overflow, so
-    // every value in these chunks is already known finite.
-    let mut flat: Vec<f32> = Vec::with_capacity(projected_elements);
-    for chunks in &per_audio_chunks {
-        for chunk in chunks {
+        for chunk in &chunks {
             let slice = chunk
                 .as_slice()
                 .ok_or_else(|| runtime_error("mel chunk not contiguous"))?;
             flat.extend_from_slice(slice);
         }
+        chunk_counts.push(chunks.len());
+        per_audio_duration.push(samples.len() as f32 / preprocessor.sampling_rate as f32);
     }
-    // `flat` now holds every chunk; free the source copy before `encode`,
-    // which makes a third copy of its own.
-    drop(per_audio_chunks);
+
+    let chunk_offsets = compute_chunk_offsets(&chunk_counts);
+    let total_chunks: usize = chunk_counts.iter().sum();
+    let n_mels = preprocessor.feature_size;
+    let chunk_length = preprocessor.nb_max_frames;
 
     let features = StorageView::new(
         &[total_chunks, n_mels, chunk_length],
@@ -234,6 +224,37 @@ pub(crate) fn transcribe_many(
             encode_plain(tokenizer, &format!(" {}", text.trim()))?
         }
         _ => Vec::new(),
+    };
+
+    // Encode once; reuse for language detection, generate, and (optionally)
+    // align. CTranslate2 skips its encoder for input that is already
+    // encoded (`WhisperReplica::maybe_encode`).
+    let encoder_output = whisper
+        .encode(&features, false)
+        .map_err(|e| anyhow!("Whisper::encode failed: {e}"))?;
+
+    let per_audio_languages: Vec<String> = if let Some(token) = pinned_language {
+        vec![token; audios.len()]
+    } else {
+        let detected = whisper
+            .detect_language(&encoder_output)
+            .map_err(|e| anyhow!("Whisper::detect_language failed: {e}"))?;
+        if detected.len() != total_chunks {
+            return Err(runtime_error(format!(
+                "expected {total_chunks} language detection results, got {}",
+                detected.len()
+            )));
+        }
+        // Each audio takes the best candidate of its first chunk.
+        chunk_offsets[..audios.len()]
+            .iter()
+            .map(|&first_chunk| {
+                detected[first_chunk]
+                    .first()
+                    .map(|best| best.language.clone())
+                    .ok_or_else(|| runtime_error("detect_language returned no candidates"))
+            })
+            .collect::<Result<_>>()?
     };
 
     let emit_timestamps = request.with_timestamps || request.word_timestamps;
@@ -261,11 +282,6 @@ pub(crate) fn transcribe_many(
         .iter()
         .map(|p| p.iter().map(String::as_str).collect())
         .collect();
-
-    // Encode once; reuse for generate and (optionally) align.
-    let encoder_output = whisper
-        .encode(&features, false)
-        .map_err(|e| anyhow!("Whisper::encode failed: {e}"))?;
 
     let mut opts = request.options.clone();
     opts.return_no_speech_prob = true;
@@ -471,32 +487,6 @@ fn finite(name: &str, value: f32) -> Result<f32> {
     } else {
         Err(anyhow!("{name} is not finite ({value})"))
     }
-}
-
-fn detect_language(
-    whisper: &Whisper,
-    chunk: &ndarray::Array2<f32>,
-    preprocessor: &Preprocessor,
-) -> Result<String> {
-    let mut buf = chunk
-        .as_slice()
-        .ok_or_else(|| anyhow!("mel chunk not contiguous"))?
-        .to_vec();
-    let features = StorageView::new(
-        &[1, preprocessor.feature_size, preprocessor.nb_max_frames],
-        &mut buf,
-        Device::CPU,
-    )
-    .map_err(|e| anyhow!("StorageView::new for detect_language: {e}"))?;
-    let result = whisper
-        .detect_language(&features)
-        .map_err(|e| anyhow!("Whisper::detect_language failed: {e}"))?;
-    let detected = result
-        .into_iter()
-        .next()
-        .and_then(|v| v.into_iter().next())
-        .ok_or_else(|| anyhow!("detect_language returned no candidates"))?;
-    Ok(detected.language)
 }
 
 /// Builds the SOT block used by `Whisper::align`, mirroring the prompt
