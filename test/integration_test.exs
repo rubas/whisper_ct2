@@ -524,6 +524,33 @@ defmodule WhisperCt2.IntegrationTest do
       assert normalised(text) =~ "country"
     end
 
+    test "transcribe_batch auto-detects the same language per audio as transcribe",
+         %{model: model, audio: {:pcm_f32, jfk}} do
+      # The tripled clip spans two chunks, so the noise clip starts at
+      # chunk 2 of the batch. The tiny model hears the noise as a language
+      # other than English, so a language read from the wrong chunk fails.
+      {noise, _} =
+        Enum.map_reduce(1..32_000, :rand.seed_s(:exsss, 1), fn _, state ->
+          {x, state} = :rand.uniform_s(state)
+          {<<(x - 0.5) * 0.2::float-32-little>>, state}
+        end)
+
+      audios = [{:pcm_f32, jfk <> jfk <> jfk}, {:pcm_f32, IO.iodata_to_binary(noise)}]
+
+      assert {:ok, batched} = WhisperCt2.transcribe_batch(model, audios)
+
+      singles =
+        Enum.map(audios, fn audio ->
+          assert {:ok, single} = WhisperCt2.transcribe(model, audio)
+          single
+        end)
+
+      assert [%{language: "en"}, %{language: noise_lang}] = singles
+      refute noise_lang == "en"
+      assert Enum.map(batched, & &1.language) == Enum.map(singles, & &1.language)
+      assert Enum.map(batched, &normalised(&1.text)) == Enum.map(singles, &normalised(&1.text))
+    end
+
     test "word_timestamps align within the clip on the multilingual model",
          %{model: model, audio: audio} do
       assert {:ok, %Transcription{segments: segs, duration_s: dur}} =
