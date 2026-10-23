@@ -9,7 +9,7 @@ name = "whisper_ct2_native"
 crate-type = ["cdylib"]
 
 [dependencies]
-rustler = "0.39.0"
+rustler = "0.38.0"
 # No `whisper` feature: it only builds the high-level `ct2rs::Whisper`
 # wrapper, which we do not use, and pulls in mel_spec 0.3 with the yanked
 # zip 2.x (#85).
