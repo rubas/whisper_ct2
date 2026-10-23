@@ -53,7 +53,7 @@ defmodule WhisperCt2.MixProject do
         "ct2rs" => "https://github.com/jkawamoto/ctranslate2-rs"
       },
       files:
-        ~w(lib native/whisper_ct2_native/src native/whisper_ct2_native/Cargo.toml native/whisper_ct2_native/Cargo.lock checksum-*.exs mix.exs README.md CHANGELOG.md LICENSE*)
+        ~w(lib .cargo/config.toml native/whisper_ct2_native/src native/whisper_ct2_native/Cargo.toml native/whisper_ct2_native/Cargo.lock checksum-*.exs mix.exs README.md CHANGELOG.md LICENSE*)
     ]
   end
 
