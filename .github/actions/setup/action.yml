@@ -1,5 +1,5 @@
 name: "Setup whisper_ct2 build env"
-description: "System packages, Task, Elixir/OTP, Rust toolchain, sccache, and the mix/cargo/native caches."
+description: "Task, Elixir/OTP, Rust toolchain, sccache, and the mix/cargo/native caches."
 
 inputs:
   elixir-version:
@@ -27,12 +27,8 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Install system packages
-      shell: bash
-      run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq cmake build-essential
-
+    # No apt step: the GitHub-hosted Ubuntu image has cmake, gcc, g++, and make. An apt step only adds the Ubuntu
+    # mirror, which took 7 minutes on the ubuntu-26.04 image on 2026-10-23.
     - name: Install Task
       uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
       with:
@@ -89,6 +85,13 @@ runs:
         restore-keys: |
           ${{ runner.os }}-cargo-${{ inputs.rust-toolchain }}-
 
+    # Cargo rebuilds the whole target when the Ubuntu release changes. A target from another release thus gives no
+    # warm build, and an exact key match never saves the new one.
+    - name: Read the runner image
+      id: image
+      shell: bash
+      run: echo "os=$ImageOS" >> "$GITHUB_OUTPUT"
+
     - name: Cache native build artifacts (Cargo target + CMake)
       # The CTranslate2 CMake build inside the Cargo target dir is the
       # ~10-minute cost on a cold run. Keyed on Cargo.lock so the cache only
@@ -97,9 +100,9 @@ runs:
       with:
         path: |
           native/whisper_ct2_native/target
-        key: ${{ runner.os }}-native-${{ inputs.rust-toolchain }}-${{ hashFiles('native/whisper_ct2_native/Cargo.lock') }}
+        key: ${{ steps.image.outputs.os }}-native-${{ inputs.rust-toolchain }}-${{ hashFiles('native/whisper_ct2_native/Cargo.lock') }}
         restore-keys: |
-          ${{ runner.os }}-native-${{ inputs.rust-toolchain }}-
+          ${{ steps.image.outputs.os }}-native-${{ inputs.rust-toolchain }}-
 
     - name: Cache integration fixtures (model + audio)
       if: ${{ inputs.cache-fixtures == 'true' }}
