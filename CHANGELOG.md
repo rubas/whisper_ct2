@@ -7,6 +7,11 @@
 - The NIF crate moves to `mel_spec` 0.5 and builds `ct2rs` without its
   unused `whisper` feature. This removes the yanked `zip` 2.4.2, which
   failed the daily cargo-audit. `Cargo.lock` holds 15 fewer crates. (#85)
+- A source build on x86_64 Linux compiles the C and C++ code for plain
+  x86-64. Before, a compiler that defaults to a newer ISA, such as GCC on
+  Ubuntu 26.04 amd64v3, gave a NIF that failed to load with an undefined
+  `ctranslate2::cpu` symbol. The package now includes `.cargo/config.toml`,
+  which sets the flags.
 
 ## 0.7.0 - 2026-09-23
 

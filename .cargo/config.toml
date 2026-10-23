@@ -1,0 +1,17 @@
+# Cargo reads this file for every build of the NIF crate: `mix compile`,
+# the Taskfile, the release workflow, and a source build from the Hex
+# package.
+
+[env]
+# Compile the C and C++ code of the NIF (CTranslate2, ruy, cpu_features,
+# sentencepiece, oniguruma) for the same baseline as the Rust target.
+#
+# CTranslate2 compiles its CPU kernels once for each ISA and selects one at
+# run time. It builds the generic kernels from `kernels.cc` without ISA
+# flags, so the compiler default sets the ISA. GCC on Ubuntu 26.04 amd64v3,
+# which GitHub uses for `ubuntu-latest`, defaults to `-march=x86-64-v3`.
+# Then `kernels.cc` builds as AVX2, the generic and AVX kernels are missing,
+# and the NIF fails to load with an undefined
+# `ctranslate2::cpu::*<CpuIsa(0), ...>` symbol.
+CFLAGS_x86_64_unknown_linux_gnu = "-march=x86-64"
+CXXFLAGS_x86_64_unknown_linux_gnu = "-march=x86-64"
