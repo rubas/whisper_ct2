@@ -35,7 +35,7 @@ rustfft = "6.4"
 # rest of its lifetime). `ct2rs::sys::Whisper` is `Send + Sync`; the mutex
 # deliberately serialises inference per model to bound CTranslate2 memory
 # and thread use. Rationale and cost on `WhisperResource` in `lib.rs`.
-parking_lot = "0.12"
+parking_lot = "0.13"
 
 [dev-dependencies]
 # Throwaway model directories for `Preprocessor::load` validation tests.
