@@ -16,7 +16,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use ct2rs::sys::{Device, StorageView, Whisper, WhisperOptions};
-use ct2rs::tokenizers::hf;
+use tokenizers::Tokenizer;
 
 use crate::align::{AlignParams, ChunkAlignInput, DEFAULT_MEDIAN_FILTER_WIDTH, align_batch};
 use crate::errors::{invalid_request, runtime_error};
@@ -120,7 +120,7 @@ struct ChunkState {
 /// Transcribes a single audio.
 pub(crate) fn transcribe_one(
     whisper: &Whisper,
-    tokenizer: &hf::Tokenizer,
+    tokenizer: &Tokenizer,
     preprocessor: &Preprocessor,
     specials: &SpecialTokens,
     samples: &[f32],
@@ -145,7 +145,7 @@ pub(crate) fn transcribe_one(
 /// from the same encoder output.
 pub(crate) fn transcribe_many(
     whisper: &Whisper,
-    tokenizer: &hf::Tokenizer,
+    tokenizer: &Tokenizer,
     preprocessor: &Preprocessor,
     specials: &SpecialTokens,
     audios: &[&[f32]],
@@ -501,7 +501,7 @@ fn finite(name: &str, value: f32) -> Result<f32> {
 /// cross-attention the word timings derive from. faster-whisper passes
 /// its `sot_sequence` without the token for the same reason.
 fn build_align_start_sequence(
-    tokenizer: &hf::Tokenizer,
+    tokenizer: &Tokenizer,
     specials: &SpecialTokens,
     multilingual: bool,
     language_token: &str,

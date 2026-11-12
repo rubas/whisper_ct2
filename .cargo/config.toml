@@ -12,7 +12,7 @@ target-dir = "target"
 
 [env]
 # Compile the C and C++ code of the NIF (CTranslate2, ruy, cpu_features,
-# sentencepiece, oniguruma) for the same baseline as the Rust target.
+# oniguruma) for the same baseline as the Rust target.
 #
 # CTranslate2 compiles its CPU kernels once for each ISA and selects one at
 # run time. It builds the generic kernels from `kernels.cc` without ISA

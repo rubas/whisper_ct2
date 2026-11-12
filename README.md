@@ -200,7 +200,7 @@ compile the dependency:
 WHISPER_CT2_VARIANT=mkl mix deps.compile whisper_ct2
 ```
 
-A source build can use any combination of the `ct2rs` features `dnnl`, `mkl`,
+A source build can use any combination of the NIF features `dnnl`, `mkl`,
 `openblas`, `accelerate`, `cuda`, and `cuda-dynamic`:
 
 ```bash

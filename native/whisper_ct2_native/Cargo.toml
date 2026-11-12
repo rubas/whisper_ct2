@@ -10,18 +10,19 @@ crate-type = ["cdylib"]
 
 [dependencies]
 rustler = "0.38.0"
-# No `whisper` feature: it only builds the high-level `ct2rs::Whisper`
-# wrapper, which we do not use, and pulls in mel_spec 0.3 with the yanked
-# zip 2.x (#85).
-ct2rs = { version = "0.10.2", features = ["tokenizers"] }
+# We call only `ct2rs::sys`. Without the default features, ct2rs builds no
+# SentencePiece and no `tokenizers`; `ruy` and `cuda-small-binary` are the
+# other two defaults. ct2rs 0.11.0 moves `sys` into the ct2rs-sys crate,
+# whose 0.11.0 release does not link Intel MKL: the `mkl` NIF fails to load
+# with an undefined `MKL_Free_Buffers`.
+ct2rs = { version = "0.10.4", default-features = false, features = ["ruy", "cuda-small-binary"] }
 mel_spec = "0.5"
 # `ndarray` must stay on the major/minor of mel_spec 0.5: `mel_spec::mel`
-# returns the `Array2` that we keep as the filterbank. `tokenizers` must stay
-# on the major/minor of ct2rs 0.10.2: our code passes ct2rs's re-exported
-# `hf::Tokenizer` to `tokenizers::Tokenizer` by reference, which only
-# compiles while both are the same crate version.
+# returns the `Array2` that we keep as the filterbank.
 ndarray = "0.16"
-tokenizers = "0.22"
+# Only the `onig` regex engine of the default features: the others serve
+# training and progress bars.
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
