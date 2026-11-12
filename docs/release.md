@@ -23,27 +23,33 @@ x86_64 Linux, and `WHISPER_CT2_BUILD=1` forces a source build instead.
    `main`.
 2. On every push to `main`, the workflow releases when the `v<version>` tag
    for `@version` does not exist yet. It builds every artefact, pushes the
-   tag, and uploads the tarballs plus `SHA256SUMS` to a new GitHub release. It
-   pushes the tag only after every artefact builds, so a failed build loses
-   nothing: the next push to `main` releases the version. When the run fails
-   after the tag push, dispatch the workflow with that tag. Do not push the
-   tag by hand: the workflow then treats the version as released and builds
-   nothing.
+   tag, and uploads the tarballs plus `SHA256SUMS` to a new GitHub release. A
+   build fails when its NIF needs a symbol that no library defines, because
+   the BEAM could not load it. It pushes the tag only after every artefact
+   builds, so a failed build loses nothing: the next push to `main` releases
+   the version. When the run fails after the tag push, dispatch the workflow
+   with that tag. Do not push the tag by hand: the workflow then treats the
+   version as released and builds nothing.
 3. Once the assets are up, regenerate the checksum file locally:
 
    ```bash
-   mix rustler_precompiled.download WhisperCt2.Native --all --print
+   task checksum:download
    ```
 
-   The task fails when an asset of a target is missing. Commit
+   The task builds the NIF from source first, because
+   `mix rustler_precompiled.download` reads the version and the targets from
+   the metadata of the last compile. The task keeps that metadata in
+   `_build`, where a compile in another checkout cannot change it. It fails
+   when an asset of a target is missing. Commit
    `checksum-Elixir.WhisperCt2.Native.exs`, and open a pull request.
 4. The merge of the checksum PR publishes. A push to `main` that changes the
    checksum file, for a version that has its tag, starts the
    `Publish to Hex` job. It checks out the tag, which the NIF archives were
    built from, and takes the checksum file of the merge. It compares that
    file with the release's `SHA256SUMS` and stops when they differ. Then it
-   runs `mix hex.publish --yes` with `WHISPER_CT2_BUILD=0`, so the docs build
-   downloads the precompiled NIF and checks it against the checksum file.
+   downloads the precompiled NIF of its runner with `WHISPER_CT2_BUILD=0`,
+   checks it against the checksum file, loads it, and runs
+   `mix hex.publish --yes`.
    `mix.exs` lists `checksum-*.exs` under `:files`, so the checksum travels
    inside the Hex tarball.
 
@@ -69,13 +75,15 @@ and the job prints `Package staged for approval at <url>`. A package
 owner approves it on hex.pm with their 2FA, within 7 days. The job does not
 wait for that approval: a GitHub job stops after 6 hours.
 
-When the job fails, fix the cause and re-run the run of the checksum merge.
-It publishes the same tag with the same checksum file. A re-run keeps the
-workflow file of that run, so when the job itself needs a fix, a package
-owner runs `WHISPER_CT2_BUILD=0 mix hex.publish` from the tag with the
-checksum file of the merge. The job fails when the log says
-`Publishing failed`, because `mix hex.publish` exits 0 when only the docs
-upload fails.
+When the job fails for a cause outside the repo, such as hex.pm or the
+workload identity, fix it and re-run the job. It publishes the same tag with
+the same checksum file. A cause in the tag needs a new patch version. A
+re-run keeps the workflow file of its run, so after a fix of the job itself,
+release a new patch version, or a package owner runs
+`WHISPER_CT2_BUILD=0 mix hex.publish` from the tag with the checksum file of
+the merge. The job fails when the log says `Publishing failed` or
+`Publishing docs failed`, because `mix hex.publish` exits 0 when only the
+docs upload fails.
 
 The tag `vX.Y.Z` points at the version bump, so its checksum file is still
 the one of the release before. A git dependency on the tag needs

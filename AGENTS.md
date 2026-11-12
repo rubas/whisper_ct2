@@ -29,8 +29,8 @@ release stays in the repo.
   builds the release assets. Bump it only in a release PR.
 - A merge to `main` that changes `checksum-Elixir.WhisperCt2.Native.exs`
   publishes the version to Hex, and Hex versions are immutable. Change that
-  file only in the checksum PR of a release, which
-  `mix rustler_precompiled.download` writes.
+  file only in the checksum PR of a release, which `task checksum:download`
+  writes.
 
 ## Design decisions
 
