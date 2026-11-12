@@ -1,4 +1,4 @@
-//! Rustler NIF wrapping `ct2rs_sys::Whisper`. Every entry point returns
+//! Rustler NIF wrapping `ct2rs::sys::Whisper`. Every entry point returns
 //! `{:ok, value}` or `{:error, %{type, message, details}}`; PCM input is
 //! little-endian IEEE-754 `f32` mono at 16 kHz, chunked into Whisper
 //! 30 s windows internally.
@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 
-use ct2rs_sys::{ComputeType, Config, Device, Whisper, WhisperOptions, get_device_count};
+use ct2rs::sys::{ComputeType, Config, Device, Whisper, WhisperOptions, get_device_count};
 use parking_lot::Mutex;
 use rustler::types::binary::Binary;
 use rustler::{Encoder, Env, NifMap, ResourceArc, Term};
@@ -77,10 +77,10 @@ impl From<anyhow::Error> for NativeError {
 }
 
 /// Opaque BEAM resource holding a loaded Whisper model plus everything we
-/// need to feed `ct2rs_sys::Whisper` (mel filterbank, tokenizer, special
+/// need to feed `ct2rs::sys::Whisper` (mel filterbank, tokenizer, special
 /// token IDs).
 ///
-/// `sys::Whisper` is `Send + Sync` (ct2rs-sys asserts both; the CTranslate2
+/// `sys::Whisper` is `Send + Sync` (ct2rs asserts both; the CTranslate2
 /// replica pool is internally thread-safe), so the [`Mutex`] is not needed
 /// for soundness — it deliberately serialises inference to one call per
 /// model, bounding CTranslate2 memory and thread use. The cost: every
@@ -488,9 +488,7 @@ fn decode_pcm_f32(bytes: &[u8]) -> Result<Vec<f32>, NativeError> {
     Ok(samples)
 }
 
-// Verified 2026-05 with ct2rs 0.9.18, and still exact in ct2rs-sys 0.11.0,
-// whose `WhisperOptions` is the old `ct2rs::sys` code moved into its own
-// crate: every field exposed in `TranscribeOpts` whose ct2rs
+// Every field exposed in `TranscribeOpts` whose ct2rs
 // default we inherit (`beam_size=5`, `patience=1.0`, `length_penalty=1.0`,
 // `repetition_penalty=1.0`, `no_repeat_ngram_size=0`, `max_length=448`,
 // `sampling_topk=1` (greedy), `sampling_temperature=1.0`,
@@ -501,7 +499,7 @@ fn decode_pcm_f32(bytes: &[u8]) -> Result<Vec<f32>, NativeError> {
 // fallback list vs ct2rs's `1.0` — is a no-op at `sampling_topk=1`
 // because beam/greedy decoding ignores temperature.
 //
-// If you bump the ct2rs-sys version, re-run the comparison before assuming
+// If you bump the ct2rs version, re-run the comparison before assuming
 // the inheritance still holds.
 fn build_request(opts: &TranscribeOpts) -> TranscribeRequest {
     let mut whisper_opts = WhisperOptions::default();

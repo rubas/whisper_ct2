@@ -38,7 +38,7 @@
 )]
 
 use anyhow::{Result, anyhow};
-use ct2rs_sys::{StorageView, Whisper};
+use ct2rs::sys::{StorageView, Whisper};
 use tokenizers::Tokenizer;
 
 use crate::tokens::SubSegment;
@@ -249,7 +249,7 @@ impl PreWord {
 /// takes as the final `end_time`. Indices past `n_tokens` are padding
 /// noise and stay ignored.
 fn token_first_frames(
-    alignments: &[ct2rs_sys::WhisperTokenAlignment],
+    alignments: &[ct2rs::sys::WhisperTokenAlignment],
     n_tokens: usize,
 ) -> (Vec<usize>, Option<usize>) {
     let mut out = vec![usize::MAX; n_tokens];
@@ -624,11 +624,11 @@ mod tests {
         // assignment and must inherit token 0's frame, not stay at usize::MAX
         // (which would translate to a giant `end` time downstream).
         let alignments = vec![
-            ct2rs_sys::WhisperTokenAlignment {
+            ct2rs::sys::WhisperTokenAlignment {
                 token_x: 0,
                 frame_x: 5,
             },
-            ct2rs_sys::WhisperTokenAlignment {
+            ct2rs::sys::WhisperTokenAlignment {
                 token_x: 2,
                 frame_x: 30,
             },
@@ -643,7 +643,7 @@ mod tests {
         // A token_x past `n_tokens + 1` is library noise and must not
         // panic (the DTW backend can emit padding indices). Only exactly
         // `n_tokens` is the EOT row.
-        let alignments = vec![ct2rs_sys::WhisperTokenAlignment {
+        let alignments = vec![ct2rs::sys::WhisperTokenAlignment {
             token_x: 100,
             frame_x: 7,
         }];
@@ -658,19 +658,19 @@ mod tests {
         // entry into row `n_tokens` is the true end of the chunk's last
         // word and must be surfaced, not filtered as noise.
         let alignments = vec![
-            ct2rs_sys::WhisperTokenAlignment {
+            ct2rs::sys::WhisperTokenAlignment {
                 token_x: 0,
                 frame_x: 5,
             },
-            ct2rs_sys::WhisperTokenAlignment {
+            ct2rs::sys::WhisperTokenAlignment {
                 token_x: 1,
                 frame_x: 9,
             },
-            ct2rs_sys::WhisperTokenAlignment {
+            ct2rs::sys::WhisperTokenAlignment {
                 token_x: 2,
                 frame_x: 30,
             },
-            ct2rs_sys::WhisperTokenAlignment {
+            ct2rs::sys::WhisperTokenAlignment {
                 token_x: 2,
                 frame_x: 45,
             },

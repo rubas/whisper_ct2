@@ -245,5 +245,5 @@ Set `WHISPER_CT2_REFRESH=1` to download them again.
 
 ## License
 
-MIT. CTranslate2 is also MIT. The `ct2rs-sys` crate links CTranslate2 statically
+MIT. CTranslate2 is also MIT. The `ct2rs` crate links CTranslate2 statically
 by default.
