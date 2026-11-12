@@ -201,7 +201,7 @@ jobs:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
-            native/whisper_ct2_native/target
+            target
           key: release-${{ matrix.id }}-${{ hashFiles('native/whisper_ct2_native/Cargo.lock') }}
           restore-keys: release-${{ matrix.id }}-
 
@@ -224,7 +224,7 @@ jobs:
           LIB_EXT: ${{ matrix.lib_ext }}
           SUFFIX: ${{ matrix.suffix }}
         run: |
-          SRC_DIR="native/whisper_ct2_native/target/${TARGET}/release"
+          SRC_DIR="target/${TARGET}/release"
           SRC_NAME="libwhisper_ct2_native.${SRC_EXT}"
           LIB_NAME="libwhisper_ct2_native-v${VERSION}-nif-${NIF_VERSION}-${TARGET}${SUFFIX}.${LIB_EXT}"
           STAGE_DIR="$(mktemp -d)"

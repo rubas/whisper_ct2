@@ -2,6 +2,14 @@
 # the Taskfile, the release workflow, and a source build from the Hex
 # package.
 
+[build]
+# Build into `target/` at the package root, outside the crate directory.
+# Rustler's mix compiler globs every file under the crate directory, and the
+# glob follows symlinks. The Intel oneMKL tree that an `mkl` build unpacks
+# into the target holds symlink loops, so a target inside the crate made
+# `mix compile` grow the BEAM until the machine ran out of memory.
+target-dir = "target"
+
 [env]
 # Compile the C and C++ code of the NIF (CTranslate2, ruy, cpu_features,
 # oniguruma) for the same baseline as the Rust target.

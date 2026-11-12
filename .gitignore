@@ -11,7 +11,7 @@ erl_crash.dump
 whisper_ct2-*.tar
 
 # Rust native artifacts
-native/*/target/
+/target/
 priv/native/
 
 # Test fixtures — most are downloaded on demand by
