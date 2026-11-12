@@ -1724,6 +1724,7 @@ dependencies = [
  "ct2rs",
  "mel_spec",
  "ndarray",
+ "onednn-src",
  "parking_lot",
  "rustfft",
  "rustler",

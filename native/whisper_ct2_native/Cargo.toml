@@ -16,6 +16,9 @@ rustler = "0.38.0"
 # whose 0.11.0 release does not link Intel MKL: the `mkl` NIF fails to load
 # with an undefined `MKL_Free_Buffers`.
 ct2rs = { version = "0.10.4", default-features = false, features = ["ruy", "cuda-small-binary"] }
+# Only for `DEP_DNNL_LIBRARY_PATH`, which `build.rs` reads. ct2rs pulls in the
+# same crate for its `dnnl` feature.
+onednn-src = { version = "0.1.23", optional = true }
 mel_spec = "0.5"
 # `ndarray` must stay on the major/minor of mel_spec 0.5: `mel_spec::mel`
 # returns the `Array2` that we keep as the filterbank.
@@ -64,7 +67,7 @@ default = []
 cuda = ["ct2rs/cuda"]
 cuda-dynamic = ["ct2rs/cuda-dynamic-loading"]
 mkl = ["ct2rs/mkl"]
-dnnl = ["ct2rs/dnnl"]
+dnnl = ["ct2rs/dnnl", "dep:onednn-src"]
 openblas = ["ct2rs/openblas"]
 accelerate = ["ct2rs/accelerate"]
 
