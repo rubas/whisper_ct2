@@ -85,6 +85,15 @@ tasks:
     cmds:
       - mix hex.build
 
+  checksum:download:
+    desc: Write the checksum file from the NIF artefacts of the GitHub release of @version
+    cmds:
+      # The download takes the version and the targets from the metadata that
+      # the last compile of WhisperCt2.Native wrote to the user cache, maybe in
+      # another checkout. --force writes it anew.
+      - mix compile --force
+      - mix rustler_precompiled.download WhisperCt2.Native --all --print
+
   check:
     desc: Full local quality gate (Elixir + Rust)
     cmds:
