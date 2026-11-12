@@ -1,7 +1,7 @@
 import Config
 
-# When developing this library locally, always build the NIF from source
-# rather than trying to download a precompiled artefact from GitHub releases.
-# Consumers of the published Hex package get the precompiled artefact
-# matching their target triple instead.
-config :rustler_precompiled, :force_build, whisper_ct2: true
+# This repo builds the NIF from source, unless WHISPER_CT2_BUILD is 0 or
+# false: the Hex publish job of `release.yml` then downloads the precompiled
+# NIF and checks it against the checksum file. Consumers of the Hex package
+# never load this file and get the precompiled NIF for their target triple.
+config :rustler_precompiled, :force_build, whisper_ct2: System.get_env("WHISPER_CT2_BUILD") not in ["0", "false"]

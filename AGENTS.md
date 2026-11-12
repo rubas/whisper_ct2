@@ -6,7 +6,8 @@ public API. This file holds the rules for work in the repo.
 
 ## Builds and tests
 
-- `config/config.exs` always builds the NIF from source in this repo. The
+- `config/config.exs` builds the NIF from source in this repo, unless
+  `WHISPER_CT2_BUILD=0` is set, which only the Hex publish job does. The
   first compile builds CTranslate2 and takes about 10 minutes. Later compiles
   reuse the Cargo target directory.
 - `task test:integration` downloads the tiny model and the JFK clip (about
@@ -23,6 +24,13 @@ public API. This file holds the rules for work in the repo.
 [docs/release.md](docs/release.md) is the runbook. Git tracks
 `checksum-Elixir.WhisperCt2.Native.exs`, so the checksum of each tagged
 release stays in the repo.
+
+- A merge to `main` that bumps `@version` in `mix.exs` tags the version and
+  builds the release assets. Bump it only in a release PR.
+- A merge to `main` that changes `checksum-Elixir.WhisperCt2.Native.exs`
+  publishes the version to Hex, and Hex versions are immutable. Change that
+  file only in the checksum PR of a release, which
+  `mix rustler_precompiled.download` writes.
 
 ## Design decisions
 

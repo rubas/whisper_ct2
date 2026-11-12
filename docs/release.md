@@ -1,7 +1,8 @@
 # Release
 
-`.github/workflows/release.yml` builds the precompiled NIF artefacts and
-creates the GitHub release. Publishing to Hex stays manual.
+`.github/workflows/release.yml` builds the precompiled NIF artefacts,
+creates the GitHub release, and publishes the package to Hex when the
+checksum PR merges.
 
 ## Artefacts
 
@@ -31,12 +32,20 @@ x86_64 Linux, and `WHISPER_CT2_BUILD=1` forces a source build instead.
 3. Once the assets are up, regenerate the checksum file locally:
 
    ```bash
-   mix rustler_precompiled.download WhisperCt2.Native --all --ignore-unavailable --print
+   mix rustler_precompiled.download WhisperCt2.Native --all --print
    ```
 
-   Commit `checksum-Elixir.WhisperCt2.Native.exs` and push it to `main`.
-4. Run `mix hex.publish` from a clean tree. `mix.exs` lists `checksum-*.exs`
-   under `:files`, so the checksum travels inside the Hex tarball.
+   The task fails when an asset of a target is missing. Commit
+   `checksum-Elixir.WhisperCt2.Native.exs`, and open a pull request.
+4. The merge of the checksum PR publishes. A push to `main` that changes the
+   checksum file, for a version that has its tag, starts the
+   `Publish to Hex` job. It checks out the tag, which the NIF archives were
+   built from, and takes the checksum file of the merge. It compares that
+   file with the release's `SHA256SUMS` and stops when they differ. Then it
+   runs `mix hex.publish --yes` with `WHISPER_CT2_BUILD=0`, so the docs build
+   downloads the precompiled NIF and checks it against the checksum file.
+   `mix.exs` lists `checksum-*.exs` under `:files`, so the checksum travels
+   inside the Hex tarball.
 
 To rebuild and re-release an existing tag without a version bump, dispatch the
 workflow manually and pass the tag as the `tag` input. The build checks out
@@ -45,3 +54,29 @@ when the tag does not exist or when its `@version` differs from the tag. The
 rebuilt tarballs replace the assets of the release, and their bytes differ, so
 regenerate the checksum file afterwards. Do not rebuild a tag that is already
 on Hex: its package carries the old checksums.
+
+## Hex
+
+The job stores no Hex key. It runs in the GitHub environment `hex`, which
+only `main` can use, and Hex exchanges the job's OIDC token for a token that
+can only publish `whisper_ct2`. For that, the package has a workload
+identity on hex.pm, in its tab "Workload identities": repository owner
+`rubas`, repository `whisper_ct2`, workflow `release.yml`, environment
+`hex`. Only a full owner of the package can add or change it.
+
+The package has staged publishing on. Hex holds each release from the job,
+and the job prints `Package staged for approval at <url>`. A package
+owner approves it on hex.pm with their 2FA, within 7 days. The job does not
+wait for that approval: a GitHub job stops after 6 hours.
+
+When the job fails, fix the cause and re-run the run of the checksum merge.
+It publishes the same tag with the same checksum file. A re-run keeps the
+workflow file of that run, so when the job itself needs a fix, a package
+owner runs `WHISPER_CT2_BUILD=0 mix hex.publish` from the tag with the
+checksum file of the merge. The job fails when the log says
+`Publishing failed`, because `mix hex.publish` exits 0 when only the docs
+upload fails.
+
+The tag `vX.Y.Z` points at the version bump, so its checksum file is still
+the one of the release before. A git dependency on the tag needs
+`WHISPER_CT2_BUILD=1`.
