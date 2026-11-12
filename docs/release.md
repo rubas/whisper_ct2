@@ -38,8 +38,9 @@ x86_64 Linux, and `WHISPER_CT2_BUILD=1` forces a source build instead.
 
    The task builds the NIF from source first, because
    `mix rustler_precompiled.download` reads the version and the targets from
-   the metadata of the last compile, in a user cache that every checkout
-   shares. It fails when an asset of a target is missing. Commit
+   the metadata of the last compile. The task keeps that metadata in
+   `_build`, where a compile in another checkout cannot change it. It fails
+   when an asset of a target is missing. Commit
    `checksum-Elixir.WhisperCt2.Native.exs`, and open a pull request.
 4. The merge of the checksum PR publishes. A push to `main` that changes the
    checksum file, for a version that has its tag, starts the
