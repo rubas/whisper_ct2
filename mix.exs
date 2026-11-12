@@ -64,7 +64,7 @@ defmodule WhisperCt2.MixProject do
       # from the GitHub release matching the package version. `rustler` is
       # only needed for source builds (`WHISPER_CT2_BUILD=1`) and during
       # release CI, so it is marked optional.
-      {:rustler_precompiled, "~> 0.9.0"},
+      {:rustler_precompiled, "~> 0.10.1"},
       {:rustler, "~> 0.38.0", optional: true},
       {:credo, "~> 1.7.18", only: [:dev, :test], runtime: false},
       {:ex_slop, "~> 0.4", only: [:dev, :test], runtime: false},
