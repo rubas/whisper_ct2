@@ -18,7 +18,7 @@ defmodule WhisperCt2.Native do
     crate: "whisper_ct2_native",
     base_url: "https://github.com/rubas/whisper_ct2/releases/download/v#{@version}",
     version: @version,
-    # Opt-in source build; unconditional in this repo via `config/config.exs`.
+    # Opt-in source build. `config/config.exs` turns it on in this repo.
     force_build:
       System.get_env("WHISPER_CT2_BUILD") in ["1", "true"] or
         Application.compile_env(:rustler_precompiled, [:force_build, :whisper_ct2], false),
