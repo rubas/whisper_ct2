@@ -212,6 +212,29 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: cargo build --release --target "$TARGET" --features "$FEATURES"
 
+      # The BEAM binds every symbol of a NIF when it loads it, and only the
+      # enif_* functions come from the BEAM. Any other symbol that no library
+      # of the NIF defines fails the load, such as one of a static library
+      # that the link dropped. ldd -r binds the same way, and nm lists the
+      # symbols that macOS leaves to the load.
+      - name: Check that the NIF loads
+        shell: bash
+        env:
+          NIF: target/${{ matrix.target }}/release/libwhisper_ct2_native.${{ matrix.src_ext || matrix.lib_ext }}
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            REPORT="$(nm -m -u "$NIF")"
+            MISSING="$(grep 'dynamically looked up' <<< "$REPORT" | grep -v ' _enif_' || true)"
+          else
+            REPORT="$(ldd -r "$NIF" 2>&1)" || { echo "$REPORT"; exit 1; }
+            MISSING="$(grep -E 'not found|undefined symbol' <<< "$REPORT" | grep -v 'undefined symbol: enif_' || true)"
+          fi
+          if [ -n "$MISSING" ]; then
+            echo "$MISSING"
+            echo "::error::The NIF does not load: it needs the libraries or symbols above"
+            exit 1
+          fi
+
       # --- Package ---
 
       - name: Create tarball
@@ -328,9 +351,13 @@ jobs:
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-publish
       cancel-in-progress: false
+    # The compile downloads the precompiled NIF of this runner, not a source
+    # build of CTranslate2.
+    env:
+      WHISPER_CT2_BUILD: "0"
     steps:
       # The package holds the sources of the tag, which the NIF archives were
-      # built from, plus the checksum file of the merge that publishes.
+      # built from, and the checksum file of the merge that publishes.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ needs.detect.outputs.tag }}
@@ -338,9 +365,7 @@ jobs:
           persist-credentials: false
 
       - name: Take the checksum file of the merge
-        env:
-          SHA: ${{ needs.detect.outputs.sha }}
-        run: git checkout "$SHA" -- checksum-Elixir.WhisperCt2.Native.exs
+        run: git checkout "$GITHUB_SHA" -- checksum-Elixir.WhisperCt2.Native.exs
 
       # Hex versions are immutable, so a package with the checksums of other
       # archives stays broken.
@@ -363,14 +388,18 @@ jobs:
       - name: Install dependencies
         run: mix deps.get
 
+      # The compile checks the NIF against the checksum file, as a consumer's
+      # build does.
+      - name: Load the precompiled NIF
+        run: mix run --no-start -e 'Code.ensure_loaded!(WhisperCt2.Native)'
+
       # With no Hex credential in the job, Hex publishes through the workload
-      # identity. WHISPER_CT2_BUILD=0 makes the docs compile download the
-      # precompiled NIF of this runner and check it against the checksum file,
-      # instead of a source build of CTranslate2. A failed docs upload exits 0,
-      # so the step greps for it.
+      # identity. A failed upload of the docs still exits 0, so the step reads
+      # the log.
       - name: Publish the package and its docs
-        env:
-          WHISPER_CT2_BUILD: "0"
+        shell: bash
         run: |
           mix hex.publish --yes 2>&1 | tee "$RUNNER_TEMP/publish.log"
-          ! grep -q "Publishing failed" "$RUNNER_TEMP/publish.log"
+          if grep -E 'Publishing (docs )?failed' "$RUNNER_TEMP/publish.log"; then
+            exit 1
+          fi
