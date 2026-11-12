@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- A source build puts the Cargo target in `target/` at the package root,
+  outside the crate. `mix compile` lists every file in the crate directory
+  and follows symlinks, and the Intel oneMKL files of an `mkl` build hold
+  symlink loops, so a second compile used up all memory.
 - The NIF crate moves to `mel_spec` 0.5 and builds `ct2rs` without its
   unused `whisper` feature. This removes the yanked `zip` 2.4.2, which
   failed the daily cargo-audit. `Cargo.lock` holds 15 fewer crates. (#85)
