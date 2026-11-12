@@ -76,7 +76,8 @@ jobs:
             # The merge of the checksum PR publishes: only then does main hold
             # the checksums of the release assets, and the Hex package must
             # carry them.
-            if git diff --name-only "$BEFORE" "$GITHUB_SHA" | grep -qxF checksum-Elixir.WhisperCt2.Native.exs; then
+            CHECKSUM_CHANGED="$(git diff --name-only "$BEFORE" "$GITHUB_SHA" -- checksum-Elixir.WhisperCt2.Native.exs)"
+            if [ -n "$CHECKSUM_CHANGED" ]; then
               SHOULD_PUBLISH=true
             fi
           else
@@ -328,10 +329,18 @@ jobs:
       group: ${{ github.workflow }}-${{ github.ref }}-publish
       cancel-in-progress: false
     steps:
+      # The package holds the sources of the tag, which the NIF archives were
+      # built from, plus the checksum file of the merge that publishes.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.detect.outputs.sha }}
+          ref: refs/tags/${{ needs.detect.outputs.tag }}
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Take the checksum file of the merge
+        env:
+          SHA: ${{ needs.detect.outputs.sha }}
+        run: git checkout "$SHA" -- checksum-Elixir.WhisperCt2.Native.exs
 
       # Hex versions are immutable, so a package with the checksums of other
       # archives stays broken.
@@ -352,16 +361,16 @@ jobs:
           otp-version: "29.1.2"
 
       - name: Install dependencies
-        run: |
-          mix local.hex --force
-          mix local.rebar --force
-          mix deps.get
+        run: mix deps.get
 
       # With no Hex credential in the job, Hex publishes through the workload
       # identity. WHISPER_CT2_BUILD=0 makes the docs compile download the
       # precompiled NIF of this runner and check it against the checksum file,
-      # instead of a source build of CTranslate2.
+      # instead of a source build of CTranslate2. A failed docs upload exits 0,
+      # so the step greps for it.
       - name: Publish the package and its docs
         env:
           WHISPER_CT2_BUILD: "0"
-        run: mix hex.publish --yes
+        run: |
+          mix hex.publish --yes 2>&1 | tee "$RUNNER_TEMP/publish.log"
+          ! grep -q "Publishing failed" "$RUNNER_TEMP/publish.log"
