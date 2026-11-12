@@ -200,7 +200,7 @@ compile the dependency:
 WHISPER_CT2_VARIANT=mkl mix deps.compile whisper_ct2
 ```
 
-A source build can use any combination of the `ct2rs` features `dnnl`, `mkl`,
+A source build can use any combination of the NIF features `dnnl`, `mkl`,
 `openblas`, `accelerate`, `cuda`, and `cuda-dynamic`:
 
 ```bash
@@ -245,5 +245,5 @@ Set `WHISPER_CT2_REFRESH=1` to download them again.
 
 ## License
 
-MIT. CTranslate2 is also MIT. The `ct2rs` crate links CTranslate2 statically
+MIT. CTranslate2 is also MIT. The `ct2rs-sys` crate links CTranslate2 statically
 by default.

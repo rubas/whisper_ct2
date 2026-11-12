@@ -1,7 +1,7 @@
 # whisper_ct2
 
 Elixir bindings for Whisper speech-to-text through CTranslate2: a Rustler NIF
-over the `ct2rs` crate, with no Python at runtime. `README.md` describes the
+over the `ct2rs-sys` crate, with no Python at runtime. `README.md` describes the
 public API. This file holds the rules for work in the repo.
 
 ## Builds and tests
@@ -26,7 +26,7 @@ release stays in the repo.
 
 ## Design decisions
 
-- The NIF calls `ct2rs::sys::Whisper` directly and owns the mel filterbank,
+- The NIF calls `ct2rs_sys::Whisper` directly and owns the mel filterbank,
   the prompt, and the word alignment. The high-level `ct2rs::Whisper` wrapper
   gives no structured segment data, no `initial_prompt` or `prefix`, and no
   batch of several audios.

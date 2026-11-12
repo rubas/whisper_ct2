@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Changed
+
+- The NIF builds against `ct2rs-sys` 0.11.0 instead of `ct2rs`, and the
+  precompiled NIFs vendor CTranslate2 4.8.5 (was 4.8.3), which fixes FP16
+  and BF16 overflow and precision in CUDA attention. A source build no
+  longer compiles SentencePiece, which the NIF never used.
+- `tokenizers` 0.22 -> 0.23, which loads the added vocabulary of
+  `tokenizer.json` faster and encodes BPE faster.
+- `rustler_precompiled` `~> 0.10.1` (was `~> 0.9.0`). The download no longer
+  fails on long GitHub redirect headers.
+- CI uses Elixir 1.20.5, OTP 29.1.2, Rust 1.99.1 and zizmor 1.32.0.
+
 ### Fixed
 
 - The NIF crate moves to `mel_spec` 0.5 and builds `ct2rs` without its
