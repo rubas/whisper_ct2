@@ -36,8 +36,7 @@ release stays in the repo.
 
 - The NIF calls `ct2rs::sys::Whisper` directly and owns the mel filterbank,
   the prompt, and the word alignment. The high-level `ct2rs::Whisper` wrapper
-  gives no structured segment data, no `initial_prompt` or `prefix`, and no
-  batch of several audios.
+  takes no `initial_prompt` or `prefix` and no batch of several audios.
 - `transcribe_batch/3` puts every chunk of every audio into one storage view,
   so the encoder runs once for the whole batch.
 - English-only checkpoints (`*.en`) get only `<|startoftranscript|>` as the

@@ -2,10 +2,27 @@
 
 ## Unreleased
 
+### Changed
+
+- ct2rs 0.10.1 -> 0.10.4. The precompiled NIFs vendor CTranslate2 4.8.5
+  (was 4.8.2), which fixes FP16 and BF16 overflow and precision in CUDA
+  attention. A source build no longer compiles SentencePiece, which the NIF
+  never used.
+- `tokenizers` 0.22 -> 0.23, which loads the added vocabulary of
+  `tokenizer.json` faster and encodes BPE faster. The NIF builds it without
+  its training and progress-bar code.
+- `rustler_precompiled` `~> 0.10.1` (was `~> 0.9.0`). The download no longer
+  fails on long GitHub redirect headers, and the extract removes the old NIF
+  file first, so a process that still uses it does not crash.
+- Language detection reuses the encoder output of the batch, so a call
+  without `:language` on a multilingual model runs the encoder once instead
+  of once more for each audio. (#87)
+- CI uses Elixir 1.20.5, OTP 29.1.2, Rust 1.99.1 and zizmor 1.32.0.
+
 ### Fixed
 
-- The NIF crate moves to `mel_spec` 0.5 and builds `ct2rs` without its
-  unused `whisper` feature. This removes the yanked `zip` 2.4.2, which
+- The NIF crate moves to `mel_spec` 0.5 and drops the unused `whisper`
+  feature of `ct2rs`. This removes the yanked `zip` 2.4.2, which
   failed the daily cargo-audit. `Cargo.lock` holds 15 fewer crates. (#85)
 - A source build on x86_64 Linux compiles the C and C++ code for plain
   x86-64. Before, a compiler that defaults to a newer ISA, such as GCC on

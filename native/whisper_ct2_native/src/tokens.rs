@@ -1,8 +1,7 @@
 #![allow(clippy::cast_precision_loss)]
 
 use anyhow::{Result, anyhow};
-use ct2rs::tokenizers::hf;
-use tokenizers::Tokenizer as InnerTokenizer;
+use tokenizers::Tokenizer;
 
 /// IDs of every Whisper special token we need to interpret the generated
 /// sequence. Resolved once at model load by querying the HF tokenizer.
@@ -18,7 +17,7 @@ pub(crate) struct SpecialTokens {
 }
 
 impl SpecialTokens {
-    pub(crate) fn resolve(inner: &InnerTokenizer) -> Result<Self> {
+    pub(crate) fn resolve(inner: &Tokenizer) -> Result<Self> {
         // Whisper's timestamp tokens (`<|0.00|>` ..= `<|30.00|>`) are NOT
         // in the tokenizer vocab; they live in the model output space
         // immediately after `<|notimestamps|>`, matching faster-whisper's
@@ -44,13 +43,13 @@ pub(crate) const STARTOFPREV: &str = "<|startofprev|>";
 pub(crate) const TRANSCRIBE: &str = "<|transcribe|>";
 pub(crate) const NO_TIMESTAMPS: &str = "<|notimestamps|>";
 
-fn lookup(inner: &InnerTokenizer, token: &str) -> Result<u32> {
+fn lookup(inner: &Tokenizer, token: &str) -> Result<u32> {
     inner
         .token_to_id(token)
         .ok_or_else(|| anyhow!("special token {token} missing from tokenizer vocab"))
 }
 
-pub(crate) fn language_token(inner: &InnerTokenizer, code: &str) -> Result<String> {
+pub(crate) fn language_token(inner: &Tokenizer, code: &str) -> Result<String> {
     let token = format!("<|{code}|>");
     if inner.token_to_id(&token).is_none() {
         return Err(anyhow!("language token {token} not in vocab"));
@@ -63,15 +62,14 @@ pub(crate) fn language_token(inner: &InnerTokenizer, code: &str) -> Result<Strin
 /// its `max_length`.
 const MAX_TARGET_POSITIONS: usize = 448;
 
-pub(crate) fn token_id(inner: &InnerTokenizer, token: &str) -> Result<u32> {
+pub(crate) fn token_id(inner: &Tokenizer, token: &str) -> Result<u32> {
     inner
         .token_to_id(token)
         .ok_or_else(|| anyhow!("token {token} missing from tokenizer vocab"))
 }
 
-pub(crate) fn encode_plain(tokenizer: &hf::Tokenizer, text: &str) -> Result<Vec<String>> {
-    let inner: &InnerTokenizer = tokenizer;
-    let encoding = inner
+pub(crate) fn encode_plain(tokenizer: &Tokenizer, text: &str) -> Result<Vec<String>> {
+    let encoding = tokenizer
         .encode(text, false)
         .map_err(|e| anyhow!("failed to tokenize prompt text: {e}"))?;
     Ok(encoding.get_tokens().to_vec())
@@ -258,9 +256,8 @@ fn timestamp_seconds(token_id: u32, timestamp_begin: u32) -> f32 {
 }
 
 /// Decodes a flat list of text-only token IDs to a single string.
-pub(crate) fn decode_ids(tokenizer: &hf::Tokenizer, ids: &[u32]) -> Result<String> {
-    let inner: &InnerTokenizer = tokenizer;
-    inner
+pub(crate) fn decode_ids(tokenizer: &Tokenizer, ids: &[u32]) -> Result<String> {
+    tokenizer
         .decode(ids, true)
         .map_err(|e| anyhow!("failed to decode tokens: {e}"))
 }
