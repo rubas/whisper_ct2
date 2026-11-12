@@ -12,7 +12,11 @@
   `tokenizer.json` faster and encodes BPE faster. The NIF builds it without
   its training and progress-bar code.
 - `rustler_precompiled` `~> 0.10.1` (was `~> 0.9.0`). The download no longer
-  fails on long GitHub redirect headers.
+  fails on long GitHub redirect headers, and the extract removes the old NIF
+  file first, so a process that still uses it does not crash.
+- Language detection reuses the encoder output of the batch, so a call
+  without `:language` on a multilingual model runs the encoder once instead
+  of once more for each audio. (#87)
 - CI uses Elixir 1.20.5, OTP 29.1.2, Rust 1.99.1 and zizmor 1.32.0.
 
 ### Fixed
