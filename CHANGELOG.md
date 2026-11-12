@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- The aarch64 Linux NIF loads again. Since 0.7.1, oneDNN puts its Arm
+  KleidiAI kernels into a second static library, which the build did not
+  link, so the NIF of 0.7.1 failed to load with an undefined
+  `kai::ops::gemm` symbol. A source build with the `dnnl` feature on aarch64
+  now links that library too. (#99)
+
 ## 0.7.1 - 2026-11-12
 
 ### Changed
