@@ -38,9 +38,8 @@
 )]
 
 use anyhow::{Result, anyhow};
-use ct2rs::sys::{StorageView, Whisper};
-use ct2rs::tokenizers::hf;
-use tokenizers::Tokenizer as InnerTokenizer;
+use ct2rs_sys::{StorageView, Whisper};
+use tokenizers::Tokenizer;
 
 use crate::tokens::SubSegment;
 
@@ -109,7 +108,7 @@ pub(crate) struct AlignParams<'a> {
 /// returns post-processed per-sub-segment word lists.
 pub(crate) fn align_batch(
     whisper: &Whisper,
-    tokenizer: &hf::Tokenizer,
+    tokenizer: &Tokenizer,
     encoder_output: &StorageView<'_>,
     chunks: &[ChunkAlignInput<'_>],
     params: &AlignParams<'_>,
@@ -159,7 +158,6 @@ pub(crate) fn align_batch(
         ));
     }
 
-    let inner: &InnerTokenizer = tokenizer;
     let unicode_only = splits_words_on_unicode_only(params.language_token);
     let seconds_per_frame = params.seconds_per_frame;
     let mut out: Vec<Vec<Vec<Word>>> = Vec::with_capacity(chunks.len());
@@ -181,7 +179,7 @@ pub(crate) fn align_batch(
         //    faster-whisper's `split_to_word_tokens`. Each pre-word
         //    carries the subsegment it came from.
         let mut pre_words = group_pre_words(
-            inner,
+            tokenizer,
             flat,
             token_probs,
             &token_frames,
@@ -251,7 +249,7 @@ impl PreWord {
 /// takes as the final `end_time`. Indices past `n_tokens` are padding
 /// noise and stay ignored.
 fn token_first_frames(
-    alignments: &[ct2rs::sys::WhisperTokenAlignment],
+    alignments: &[ct2rs_sys::WhisperTokenAlignment],
     n_tokens: usize,
 ) -> (Vec<usize>, Option<usize>) {
     let mut out = vec![usize::MAX; n_tokens];
@@ -299,7 +297,7 @@ struct SubWord {
 /// used as word text: they are in the GPT-2 byte alphabet, where every
 /// non-ASCII character is mojibake (`"schön"` surfaces as `"schÃ¶n"`).
 fn split_tokens_on_unicode(
-    inner: &InnerTokenizer,
+    inner: &Tokenizer,
     token_ids: &[usize],
     span: std::ops::Range<usize>,
 ) -> Result<Vec<SubWord>> {
@@ -347,7 +345,7 @@ fn split_tokens_on_unicode(
     Ok(out)
 }
 
-fn decode_text(inner: &InnerTokenizer, ids: &[u32]) -> Result<String> {
+fn decode_text(inner: &Tokenizer, ids: &[u32]) -> Result<String> {
     inner
         .decode(ids, true)
         .map_err(|e| anyhow!("failed to decode tokens: {e}"))
@@ -366,7 +364,7 @@ fn decode_text(inner: &InnerTokenizer, ids: &[u32]) -> Result<String> {
 /// keeping the real word's end time at the punctuation token's frame
 /// instead of the next word's.
 fn group_pre_words(
-    inner: &InnerTokenizer,
+    inner: &Tokenizer,
     token_ids: &[usize],
     token_probs: &[f32],
     token_frames: &[usize],
@@ -626,11 +624,11 @@ mod tests {
         // assignment and must inherit token 0's frame, not stay at usize::MAX
         // (which would translate to a giant `end` time downstream).
         let alignments = vec![
-            ct2rs::sys::WhisperTokenAlignment {
+            ct2rs_sys::WhisperTokenAlignment {
                 token_x: 0,
                 frame_x: 5,
             },
-            ct2rs::sys::WhisperTokenAlignment {
+            ct2rs_sys::WhisperTokenAlignment {
                 token_x: 2,
                 frame_x: 30,
             },
@@ -645,7 +643,7 @@ mod tests {
         // A token_x past `n_tokens + 1` is library noise and must not
         // panic (the DTW backend can emit padding indices). Only exactly
         // `n_tokens` is the EOT row.
-        let alignments = vec![ct2rs::sys::WhisperTokenAlignment {
+        let alignments = vec![ct2rs_sys::WhisperTokenAlignment {
             token_x: 100,
             frame_x: 7,
         }];
@@ -660,19 +658,19 @@ mod tests {
         // entry into row `n_tokens` is the true end of the chunk's last
         // word and must be surfaced, not filtered as noise.
         let alignments = vec![
-            ct2rs::sys::WhisperTokenAlignment {
+            ct2rs_sys::WhisperTokenAlignment {
                 token_x: 0,
                 frame_x: 5,
             },
-            ct2rs::sys::WhisperTokenAlignment {
+            ct2rs_sys::WhisperTokenAlignment {
                 token_x: 1,
                 frame_x: 9,
             },
-            ct2rs::sys::WhisperTokenAlignment {
+            ct2rs_sys::WhisperTokenAlignment {
                 token_x: 2,
                 frame_x: 30,
             },
-            ct2rs::sys::WhisperTokenAlignment {
+            ct2rs_sys::WhisperTokenAlignment {
                 token_x: 2,
                 frame_x: 45,
             },
@@ -783,7 +781,7 @@ mod tests {
     /// Whisper `tokenizer.json`: vocab surfaces are in the GPT-2 byte
     /// alphabet (`Ġ` = space, `Ã¶` = the two UTF-8 bytes of `ö`), and the
     /// ByteLevel decoder maps them back to bytes before UTF-8 decoding.
-    fn byte_level_tokenizer(entries: &[(&str, u32)]) -> InnerTokenizer {
+    fn byte_level_tokenizer(entries: &[(&str, u32)]) -> Tokenizer {
         use tokenizers::DecoderWrapper;
         use tokenizers::decoders::byte_level::ByteLevel;
         use tokenizers::models::bpe::{BPE, Vocab};
@@ -796,7 +794,7 @@ mod tests {
             .vocab_and_merges(vocab, Vec::new())
             .build()
             .expect("valid test vocab");
-        let mut tokenizer = InnerTokenizer::new(bpe);
+        let mut tokenizer = Tokenizer::new(bpe);
         tokenizer.with_decoder(Some(DecoderWrapper::ByteLevel(ByteLevel::default())));
         tokenizer
     }
@@ -820,7 +818,7 @@ mod tests {
     }
 
     fn group(
-        tokenizer: &InnerTokenizer,
+        tokenizer: &Tokenizer,
         token_ids: &[usize],
         eot_frame: Option<usize>,
         unicode_only: bool,

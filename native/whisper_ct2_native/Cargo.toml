@@ -10,18 +10,14 @@ crate-type = ["cdylib"]
 
 [dependencies]
 rustler = "0.38.0"
-# No `whisper` feature: it only builds the high-level `ct2rs::Whisper`
-# wrapper, which we do not use, and pulls in mel_spec 0.3 with the yanked
-# zip 2.x (#85).
-ct2rs = { version = "0.10.2", features = ["tokenizers"] }
+# The raw CTranslate2 bindings. The `ct2rs` crate on top of it adds only the
+# high-level wrappers, which we do not use, and a SentencePiece build.
+ct2rs-sys = "0.11.0"
 mel_spec = "0.5"
 # `ndarray` must stay on the major/minor of mel_spec 0.5: `mel_spec::mel`
-# returns the `Array2` that we keep as the filterbank. `tokenizers` must stay
-# on the major/minor of ct2rs 0.10.2: our code passes ct2rs's re-exported
-# `hf::Tokenizer` to `tokenizers::Tokenizer` by reference, which only
-# compiles while both are the same crate version.
+# returns the `Array2` that we keep as the filterbank.
 ndarray = "0.16"
-tokenizers = "0.22"
+tokenizers = "0.23"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
@@ -53,19 +49,19 @@ tempfile = "3"
 #                  available. Preferred for shipping.
 #
 # === CPU SGEMM backend ===
-# Exactly one should normally be enabled. Defaults to ct2rs's `ruy` if none.
+# Exactly one should normally be enabled. Defaults to ct2rs-sys's `ruy` if none.
 # `mkl`        - Intel oneMKL. Fastest on Intel x86; deliberately slow on AMD.
 # `dnnl`       - oneDNN. Strong on both Intel and AMD x86. Best single-binary
 #                choice for x86_64-linux when targeting mixed CPU vendors.
 # `openblas`   - portable OpenBLAS link.
 # `accelerate` - Apple Accelerate framework (Apple Silicon / macOS only).
 default = []
-cuda = ["ct2rs/cuda"]
-cuda-dynamic = ["ct2rs/cuda-dynamic-loading"]
-mkl = ["ct2rs/mkl"]
-dnnl = ["ct2rs/dnnl"]
-openblas = ["ct2rs/openblas"]
-accelerate = ["ct2rs/accelerate"]
+cuda = ["ct2rs-sys/cuda"]
+cuda-dynamic = ["ct2rs-sys/cuda-dynamic-loading"]
+mkl = ["ct2rs-sys/mkl"]
+dnnl = ["ct2rs-sys/dnnl"]
+openblas = ["ct2rs-sys/openblas"]
+accelerate = ["ct2rs-sys/accelerate"]
 
 [lints.rust]
 # `deny` rather than `forbid`: ndarray's `s!` macro emits internal
