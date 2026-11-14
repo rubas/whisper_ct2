@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `onednn-src` 0.1.23 -> 0.1.24, which links the Arm KleidiAI library of
+  oneDNN on aarch64 itself. The NIF crate drops the `build.rs` that linked
+  it since 0.7.2, and its direct `onednn-src` dependency.
+
 ## 0.7.2 - 2026-11-12
 
 ### Fixed
