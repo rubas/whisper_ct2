@@ -1,4 +1,4 @@
-//! Core transcription flow driving `ct2rs::sys::Whisper`. `transcribe_many`
+//! Core transcription flow driving `ct2rs_sys::Whisper`. `transcribe_many`
 //! stacks every chunk of every audio into one batched `encode`+`generate`
 //! call so multi-chunk and multi-audio inputs share a single encoder pass;
 //! language auto-detection and the `align` of `word_timestamps` reuse the
@@ -15,7 +15,7 @@
 )]
 
 use anyhow::{Context, Result, anyhow};
-use ct2rs::sys::{Device, StorageView, Whisper, WhisperOptions};
+use ct2rs_sys::{Device, StorageView, Whisper, WhisperOptions};
 use tokenizers::Tokenizer;
 
 use crate::align::{AlignParams, ChunkAlignInput, DEFAULT_MEDIAN_FILTER_WIDTH, align_batch};

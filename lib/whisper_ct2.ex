@@ -2,7 +2,7 @@ defmodule WhisperCt2 do
   @moduledoc """
   Native Elixir bindings for Whisper speech-to-text via CTranslate2.
 
-  Calls `ct2rs::sys::Whisper` directly through a Rustler NIF: no Python, no
+  Calls `ct2rs_sys::Whisper` directly through a Rustler NIF: no Python, no
   HTTP gateway. The NIF owns the mel spectrogram, tokenizer, and prompt
   construction, so structured per-segment results, `:initial_prompt` /
   `:prefix` biasing, word-level timestamps, and batched transcribe across

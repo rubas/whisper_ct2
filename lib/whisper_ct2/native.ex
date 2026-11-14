@@ -1,6 +1,6 @@
 defmodule WhisperCt2.Native do
   @moduledoc """
-  Low-level Rustler bindings to `ct2rs::sys::Whisper`.
+  Low-level Rustler bindings to `ct2rs_sys::Whisper`.
 
   This module is private to the library. Use `WhisperCt2` for the public API.
   Stub names must match the Rust NIF symbols verbatim (Rustler verifies arity

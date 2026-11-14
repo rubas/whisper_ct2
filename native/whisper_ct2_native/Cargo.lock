@@ -230,10 +230,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
-name = "ct2rs"
-version = "0.10.4"
+name = "ct2rs-sys"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "610676d74956e491a5e3b3d14bc04f38fa54125d0bd024b2eedefc5189c946b9"
+checksum = "3533a9474dc03d3bad860171390c00d75dcc2f2c016942a93c25bbd2111d1fe2"
 dependencies = [
  "anyhow",
  "cmake",
@@ -1721,7 +1721,7 @@ name = "whisper_ct2_native"
 version = "0.5.0"
 dependencies = [
  "anyhow",
- "ct2rs",
+ "ct2rs-sys",
  "mel_spec",
  "ndarray",
  "parking_lot",

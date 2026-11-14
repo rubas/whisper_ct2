@@ -44,7 +44,7 @@ pub(crate) fn invalid_request(message: impl Into<String>) -> anyhow::Error {
 }
 
 /// Internal NIF runtime fault (violated internal invariant, unexpected
-/// ct2rs state). Surfaces as `:runtime_error` in Elixir — distinct from
+/// ct2rs-sys state). Surfaces as `:runtime_error` in Elixir — distinct from
 /// `:inference_error`, which is reserved for CTranslate2-side failures.
 pub(crate) fn runtime_error(message: impl Into<String>) -> anyhow::Error {
     anyhow::Error::new(Categorized {
