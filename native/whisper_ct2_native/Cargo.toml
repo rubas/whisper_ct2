@@ -12,9 +12,10 @@ crate-type = ["cdylib"]
 rustler = "0.38.0"
 # We call only `ct2rs::sys`. Without the default features, ct2rs builds no
 # SentencePiece and no `tokenizers`; `ruy` and `cuda-small-binary` are the
-# other two defaults. ct2rs 0.11.0 moves `sys` into the ct2rs-sys crate,
-# whose 0.11.0 release does not link Intel MKL: the `mkl` NIF fails to load
-# with an undefined `MKL_Free_Buffers`.
+# other two defaults. ct2rs 0.11 moves `sys` into the ct2rs-sys crate.
+# ct2rs-sys 0.11.1 never references onednn-src, so rustc drops the link
+# lines of onednn-src: the aarch64 `dnnl` NIF misses the KleidiAI library of
+# oneDNN and fails to load with an undefined `kai::ops::gemm`.
 ct2rs = { version = "0.10.4", default-features = false, features = ["ruy", "cuda-small-binary"] }
 mel_spec = "0.5"
 # `ndarray` must stay on the major/minor of mel_spec 0.5: `mel_spec::mel`
