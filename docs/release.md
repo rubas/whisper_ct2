@@ -58,8 +58,10 @@ workflow manually and pass the tag as the `tag` input. The build checks out
 that tag, whatever ref you select under "Use workflow from". The run fails
 when the tag does not exist or when its `@version` differs from the tag. The
 rebuilt tarballs replace the assets of the release, and their bytes differ, so
-regenerate the checksum file afterwards. Do not rebuild a tag that is already
-on Hex: its package carries the old checksums.
+regenerate the checksum file afterwards. Rebuild only the tag of the
+`@version` on `main`, because the checksum task and the publish job take the
+version from `main`. Do not rebuild a tag that is already on Hex: its package
+carries the old checksums.
 
 ## Hex
 
