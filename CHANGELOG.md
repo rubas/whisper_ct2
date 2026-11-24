@@ -7,6 +7,8 @@
 - `onednn-src` 0.1.23 -> 0.1.24, which links the Arm KleidiAI library of
   oneDNN on aarch64 itself. The NIF crate drops the `build.rs` that linked
   it since 0.7.2, and its direct `onednn-src` dependency.
+- CI uses OTP 29.1.3 (was 29.1.2), which fixes GHSA-9p2q-5p4x-rhpq in `snmp`
+  and GHSA-7fjc-wcvc-vp96 in `inets`.
 
 ## 0.7.2 - 2026-11-12
 
